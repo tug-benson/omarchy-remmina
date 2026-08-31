@@ -18,6 +18,7 @@ from pathlib import Path
 HOME = Path(os.environ.get("HOME", str(Path.home())))
 STORE_DIR = HOME / ".config" / "remmina-panel"
 STORE_FILE = STORE_DIR / "servers.json"
+GROUPS_FILE = STORE_DIR / "groups.json"
 
 VALID_PROTOCOLS = {"RDP", "SSH", "VNC", "SPICE", "SFTP", "HTTP", "HTTPS", "CUSTOM"}
 # Normalize input to upper
@@ -222,16 +223,147 @@ def cmd_delete(sid):
     print("OK")
     return 0
 
+def load_groups():
+    if not GROUPS_FILE.exists():
+        return []
+    try:
+        data = json.loads(GROUPS_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            # Support both old string list and new object list {name, glyph}
+            out=[]
+            for x in data:
+                if isinstance(x, str):
+                    out.append({"name": x, "glyph": ""})
+                elif isinstance(x, dict) and "name" in x:
+                    out.append({"name": sanitize(x.get("name"),64), "glyph": sanitize(x.get("glyph"),8)})
+            return out
+        return []
+    except:
+        return []
+
+def save_groups(groups):
+    STORE_DIR.mkdir(parents=True, exist_ok=True)
+    # groups is list of {name, glyph}
+    uniq={}
+    for g in groups:
+        if isinstance(g, dict) and g.get("name"):
+            uniq[g["name"]] = g.get("glyph","")
+        elif isinstance(g, str) and g:
+            uniq[g] = ""
+    out=[{"name": k, "glyph": v} for k,v in sorted(uniq.items())]
+    tmp = GROUPS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(out, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.chmod(0o600)
+    tmp.replace(GROUPS_FILE)
+
+def load_groups_names():
+    return [g["name"] for g in load_groups()]
+
 def cmd_groups():
     servers = load_servers()
     groups = {}
     for s in servers:
         g = s.get("group") or "General"
         groups[g] = groups.get(g, 0) + 1
-    # return sorted
     out = [{"group": k, "count": v} for k, v in sorted(groups.items())]
     print(json.dumps(out, ensure_ascii=False))
     return 0
+
+def cmd_groups_json():
+    print(json.dumps(load_groups(), ensure_ascii=False))
+    return 0
+
+def cmd_group_add(name, glyph=""):
+    name = sanitize(name, 64)
+    glyph = sanitize(glyph, 8)
+    if not name or name in ("Favorites", "Recent", "Windows", "Linux"):
+        print("FAIL: invalid group name", file=sys.stderr)
+        return 1
+    groups = load_groups()
+    names = [g["name"] for g in groups]
+    if name not in names:
+        groups.append({"name": name, "glyph": glyph})
+        save_groups(groups)
+    print(json.dumps(groups, ensure_ascii=False))
+    return 0
+
+def cmd_group_rename(old, new):
+    old = sanitize(old, 64)
+    new = sanitize(new, 64)
+    if not old or not new or old in ("Favorites", "Recent") or new in ("Favorites", "Recent"):
+        print("FAIL: invalid group", file=sys.stderr)
+        return 1
+    groups = load_groups()
+    found=False
+    for g in groups:
+        if g["name"] == old:
+            g["name"] = new
+            found=True
+    if found:
+        save_groups(groups)
+    servers = load_servers()
+    changed=False
+    for s in servers:
+        if (s.get("group") or "General") == old:
+            s["group"] = new
+            changed=True
+    if changed:
+        save_servers(servers)
+    print("OK")
+    return 0
+
+def cmd_group_delete(name):
+    name = sanitize(name, 64)
+    if not name or name in ("Favorites", "Recent", "Windows", "Linux", "General"):
+        print("FAIL: cannot delete default/virtual", file=sys.stderr)
+        return 1
+    groups = load_groups()
+    groups = [g for g in groups if g["name"] != name]
+    save_groups(groups)
+    servers = load_servers()
+    changed=False
+    for s in servers:
+        if (s.get("group") or "General") == name:
+            s["group"] = "General"
+            changed=True
+    if changed:
+        save_servers(servers)
+    print("OK")
+    return 0
+
+def cmd_group_set_glyph(name, glyph):
+    name = sanitize(name, 64)
+    glyph = sanitize(glyph, 8)
+    if not name or name in ("Favorites", "Recent", "Windows", "Linux"):
+        print("FAIL: invalid group", file=sys.stderr)
+        return 1
+    groups = load_groups()
+    for g in groups:
+        if g["name"] == name:
+            g["glyph"] = glyph
+            save_groups(groups)
+            print(json.dumps(groups, ensure_ascii=False))
+            return 0
+    # If not found, add it
+    groups.append({"name": name, "glyph": glyph})
+    save_groups(groups)
+    print(json.dumps(groups, ensure_ascii=False))
+    return 0
+
+def cmd_move(sid, new_group):
+    new_group = sanitize(new_group, 64) or "General"
+    if new_group in ("⭐ Favorites", "🕘 Recent"):
+        print("FAIL: cannot move to virtual group", file=sys.stderr)
+        return 1
+    servers = load_servers()
+    for s in servers:
+        if s.get("id") == sid:
+            s["group"] = new_group
+            save_servers(servers)
+            print(json.dumps(s, ensure_ascii=False))
+            return 0
+    print("FAIL: not found", file=sys.stderr)
+    return 1
 
 def cmd_stats():
     servers = load_servers()
@@ -263,6 +395,11 @@ Commands:
   update <id>          Update server (read JSON from stdin)
   delete <id>          Delete server
   groups               List groups with counts
+  groups-json          List empty custom groups
+  group-add <name>     Add empty custom group
+  group-rename <old> <new>  Rename group (updates servers)
+  group-delete <name>  Delete empty group (moves servers to General)
+  move <id> <group>    Move server to group
   stats                Stats: total/windows/linux/other
   favorite <id> <0|1>  Toggle favorite
   touch <id>           Update lastUsed to now (for Recent)
@@ -288,6 +425,19 @@ if __name__ == "__main__":
         sys.exit(cmd_delete(sys.argv[2]))
     elif cmd == "groups":
         sys.exit(cmd_groups())
+    elif cmd == "groups-json":
+        sys.exit(cmd_groups_json())
+    elif cmd == "group-add" and len(sys.argv) >= 3:
+        glyph = sys.argv[3] if len(sys.argv) > 3 else ""
+        sys.exit(cmd_group_add(sys.argv[2], glyph))
+    elif cmd == "group-rename" and len(sys.argv) == 4:
+        sys.exit(cmd_group_rename(sys.argv[2], sys.argv[3]))
+    elif cmd == "group-delete" and len(sys.argv) == 3:
+        sys.exit(cmd_group_delete(sys.argv[2]))
+    elif cmd == "group-glyph" and len(sys.argv) == 4:
+        sys.exit(cmd_group_set_glyph(sys.argv[2], sys.argv[3]))
+    elif cmd == "move" and len(sys.argv) == 4:
+        sys.exit(cmd_move(sys.argv[2], sys.argv[3]))
     elif cmd == "stats":
         sys.exit(cmd_stats())
     elif cmd == "favorite" and len(sys.argv) == 4:

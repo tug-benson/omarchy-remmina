@@ -94,6 +94,11 @@ Item {
     }
     onSearchTextChanged: applyFilter()
 
+    // ── Group helpers ──
+    readonly property var defaultGroups: ["Windows", "Linux"]
+    function isDefaultGroup(g) { return g === "Windows" || g === "Linux" }
+    function isVirtualGroup(g) { return g === "Favorites" || g === "Recent" }
+
     function recalcStats() {
         var total = servers.length
         var win=0, lin=0
@@ -114,16 +119,67 @@ Item {
         root.linuxCount=lin
         root.otherCount=Math.max(0,total-win-lin)
         var arr=[]
-        // Virtual groups on top: Favorites, Recent
-        if (fav > 0) arr.push({group: "⭐ Favorites", count: fav})
+        if (fav > 0) arr.push({group: "Favorites", count: fav})
         if (rec > 0) {
             var n = Math.min(rec, root.recentLimit)
-            arr.push({group: "🕘 Recent", count: n})
+            arr.push({group: "Recent", count: n})
         }
+        var customKeys=[]
+        var defaultKeys=[]
         var keys=Object.keys(groups).sort()
-        for (var j=0;j<keys.length;j++) arr.push({group: keys[j], count: groups[keys[j]]})
+        for (var j=0;j<keys.length;j++) {
+            if (isDefaultGroup(keys[j])) defaultKeys.push(keys[j])
+            else customKeys.push(keys[j])
+        }
+        for (var k=0;k<root.extraGroupNames.length;k++) {
+            var eg=root.extraGroupNames[k]
+            if (groups[eg] === undefined && !isDefaultGroup(eg) && !isVirtualGroup(eg)) customKeys.push(eg)
+        }
+        customKeys.sort()
+        defaultKeys.sort()
+        for (var a=0;a<customKeys.length;a++) arr.push({group: customKeys[a], count: groups[customKeys[a]] || 0})
+        for (var b=0;b<defaultKeys.length;b++) arr.push({group: defaultKeys[b], count: groups[defaultKeys[b]]})
         root.groupCounts=arr
     }
+
+    // ── Extra empty groups (custom) ──
+    property var extraGroups: [] // list of {name, glyph}
+    property var extraGroupNames: {
+        var out=[]
+        for (var i=0;i<extraGroups.length;i++) {
+            var g=extraGroups[i]
+            if (typeof g === "string") out.push(g)
+            else if (g && g.name) out.push(g.name)
+        }
+        return out
+    }
+    function groupGlyph(name) {
+        if (name === "Favorites") return "󰓎"
+        if (name === "Recent") return "󰧓"
+        if (name === "Windows") return ""
+        if (name === "Linux") return ""
+        for (var i=0;i<extraGroups.length;i++) {
+            var g=extraGroups[i]
+            if (g && g.name === name && g.glyph) return g.glyph
+        }
+        return "󰉋" // default folder
+    }
+    Process {
+        id: groupsProc
+        command: ["python3", root.scriptPath("omarchy-remmina-servers"), "groups-json"]
+        stdout: StdioCollector { waitForEnd: true }
+        onExited: function(code){
+            try {
+                var arr=JSON.parse(stdout.text.trim())
+                if (Array.isArray(arr)) root.extraGroups=arr
+                else root.extraGroups=[]
+                root.recalcStats()
+            } catch(e){ root.extraGroups=[] }
+        }
+    }
+    function refreshGroups(){ groupsProc.running=true }
+    Component.onCompleted: { refresh(); trayFixProc.running=true; Qt.callLater(refreshGroups) }
+    onServersChanged: Qt.callLater(recalcStats)
 
     // ── CRUD ──
     Process { id: addProc; stdout: StdioCollector {waitForEnd:true}
@@ -194,16 +250,45 @@ Item {
     // ── Favorite ──
     Process { id: favProc; stdout: StdioCollector {waitForEnd:true}
         onExited: function(c){
-            if (c===0) root.refresh()
+            if (c===0) { root.refresh(); root.refreshGroups() }
             else root.lastError=stdout.text.trim() || "Favorite toggle failed"
         }
     }
     function toggleFavorite(id) {
-        // Find current state
         var cur=false
         for (var i=0;i<root.servers.length;i++) if (root.servers[i].id===id) { cur=root.servers[i].favorite===true; break }
         favProc.command=["python3", root.scriptPath("omarchy-remmina-servers"), "favorite", id, cur ? "0" : "1"]
         favProc.running=true
+    }
+
+    // ── Groups ──
+    Process { id: groupProc; stdout: StdioCollector {waitForEnd:true}
+        onExited: function(c){
+            if (c===0) { root.refresh(); root.refreshGroups() }
+            else root.lastError=stdout.text.trim() || "Group operation failed"
+        }
+    }
+    function createGroup(name) {
+        if (!name || !name.trim()) { root.lastError="Group name required"; return }
+        groupProc.command=["python3", root.scriptPath("omarchy-remmina-servers"), "group-add", name.trim()]
+        groupProc.running=true
+    }
+    function renameGroup(oldName, newName) {
+        if (!oldName || !newName || !newName.trim()) { root.lastError="New name required"; return }
+        groupProc.command=["python3", root.scriptPath("omarchy-remmina-servers"), "group-rename", oldName, newName.trim()]
+        groupProc.running=true
+    }
+    function deleteGroup(name) {
+        groupProc.command=["python3", root.scriptPath("omarchy-remmina-servers"), "group-delete", name]
+        groupProc.running=true
+    }
+    function moveServerToGroup(id, newGroup) {
+        groupProc.command=["python3", root.scriptPath("omarchy-remmina-servers"), "move", id, newGroup]
+        groupProc.running=true
+    }
+    function setGroupGlyph(name, glyph) {
+        groupProc.command=["python3", root.scriptPath("omarchy-remmina-servers"), "group-glyph", name, glyph]
+        groupProc.running=true
     }
 
     // ── Import ──
@@ -267,15 +352,32 @@ Item {
         }
     }
     function pickImport() { csvPicker.running=true }
+    Process {
+        id: jsonPicker
+        command: ["zenity","--file-selection","--title=Select JSON file","--file-filter=JSON | *.json *.JSON","--file-filter=All | *"]
+        stdout: StdioCollector {waitForEnd:true}
+        onExited: function(code){
+            if (code===0) {
+                var p=stdout.text.trim()
+                if (p) root.importJson(p)
+            }
+        }
+    }
+    function pickJsonImport() { jsonPicker.running=true }
+    function importJson(path) {
+        root.busy=true
+        importProc.command=["python3", root.scriptPath("omarchy-remmina-import"), "json", path]
+        importProc.running=true
+    }
 
     // Helpers for UI: grouped model (handles virtual groups)
     function serversForGroup(g) {
-        if (g === "⭐ Favorites") {
+        if (g === "Favorites") {
             var fav=[]
             for (var i=0;i<root.filteredServers.length;i++) if (root.filteredServers[i].favorite===true) fav.push(root.filteredServers[i])
             return fav
         }
-        if (g === "🕘 Recent") {
+        if (g === "Recent") {
             var rec=[]
             for (var i=0;i<root.filteredServers.length;i++) if (root.filteredServers[i].lastUsed && root.filteredServers[i].lastUsed > 0) rec.push(root.filteredServers[i])
             rec.sort(function(a,b){ return (b.lastUsed||0) - (a.lastUsed||0) })

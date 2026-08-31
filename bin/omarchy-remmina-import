@@ -299,10 +299,49 @@ def import_remmina():
     print(json.dumps(result, ensure_ascii=False))
     return 0
 
+def import_json_file(path):
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="ignore")
+        data = json.loads(text)
+        if isinstance(data, dict):
+            # Single object or {servers: [...]}
+            if "servers" in data and isinstance(data["servers"], list):
+                records = data["servers"]
+            else:
+                records = [data]
+        elif isinstance(data, list):
+            records = data
+        else:
+            print(json.dumps({"imported":0,"skipped":0,"errors":["invalid JSON format"]}))
+            return 1
+        # Normalize keys to lower
+        normed=[]
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            norm = { (k or "").strip().lower(): (v if isinstance(v,str) else str(v) if v is not None else "") for k,v in rec.items() }
+            normed.append({
+                "name": norm.get("name") or norm.get("nom") or "",
+                "host": norm.get("host") or norm.get("ip") or norm.get("server") or norm.get("hostname") or "",
+                "protocol": norm.get("protocol") or norm.get("proto") or "",
+                "port": norm.get("port") or "",
+                "username": norm.get("username") or norm.get("user") or "",
+                "domain": norm.get("domain") or "",
+                "group": norm.get("group") or "",
+                "notes": norm.get("notes") or "",
+            })
+        result = import_records(normed)
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+    except Exception as e:
+        print(json.dumps({"imported":0,"skipped":0,"errors":[str(e)]}))
+        return 1
+
 def usage():
-    print("Usage: omarchy-remmina-import <csv|txt|ssh|remmina|csv-stdin> [path]", file=sys.stderr)
-    print("CSV header expected: name,host,protocol,port,username,group,notes", file=sys.stderr)
-    print("TXT line: name;host;protocol;port;username;group", file=sys.stderr)
+    print("Usage: omarchy-remmina-import <csv|txt|ssh|remmina|json|csv-stdin> [path]", file=sys.stderr)
+    print("CSV header expected: name,host,protocol,port,username,domain,group,notes", file=sys.stderr)
+    print("TXT line: name;host;protocol;port;username;domain;group", file=sys.stderr)
+    print("JSON: array of {name,host,protocol,port,username,domain,group,notes}", file=sys.stderr)
 
 if __name__=="__main__":
     if len(sys.argv)<2:
@@ -313,6 +352,8 @@ if __name__=="__main__":
         sys.exit(import_csv_file(sys.argv[2]))
     elif cmd=="txt" and len(sys.argv)==3:
         sys.exit(import_txt_file(sys.argv[2]))
+    elif cmd=="json" and len(sys.argv)==3:
+        sys.exit(import_json_file(sys.argv[2]))
     elif cmd=="ssh":
         sys.exit(import_ssh())
     elif cmd=="remmina":
