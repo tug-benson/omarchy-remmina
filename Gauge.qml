@@ -53,10 +53,10 @@ Item {
         Component.onCompleted: requestPaint()
     }
 
-    // glyph centred in ring (offset -1px to compensate Nerd Font side-bearing)
+    // glyph centred in ring (offset -2px to compensate Nerd Font side-bearing, was 1px right)
     Text {
         anchors.centerIn: canvas
-        anchors.horizontalCenterOffset: -1
+        anchors.horizontalCenterOffset: -2
         anchors.verticalCenterOffset: -1
         textFormat: Text.PlainText
         text: root.glyph

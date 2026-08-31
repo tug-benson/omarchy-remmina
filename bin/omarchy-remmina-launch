@@ -87,24 +87,76 @@ def launch_ssh(host, port, username):
     subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     return 0
 
-def launch_rdp(host, port, username, domain=""):
+def launch_rdp(host, port, username, domain="", server_name=""):
     disable_remmina_tray()
-    # Prefer xfreerdp if installed
+    # Try to find an existing .remmina file for this server (imported from Remmina)
+    # This preserves all original settings (gateway, security, etc.)
+    try:
+        rem_dir = HOME / ".local" / "share" / "remmina"
+        if rem_dir.exists() and server_name:
+            for f in rem_dir.glob("*.remmina"):
+                try:
+                    import configparser
+                    cp = configparser.ConfigParser()
+                    cp.read(f, encoding="utf-8")
+                    if "remmina" in cp:
+                        sec = cp["remmina"]
+                        if sec.get("name","") == server_name and sec.get("server","").split(":")[0] == host.split(":")[0]:
+                            cmd = ["remmina", "-c", str(f)]
+                            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                            return 0
+                except:
+                    continue
+    except:
+        pass
+    # Fallback: generate a temporary .remmina file for this server
+    # This is more compatible than xfreerdp URI, as it uses Remmina's own freerdp wrapper
+    try:
+        import tempfile
+        import configparser
+        # Create a minimal .remmina for RDP
+        cp = configparser.ConfigParser()
+        cp["remmina"] = {
+            "name": server_name or host,
+            "server": f"{host}:{port}" if port else host,
+            "protocol": "RDP",
+            "username": username or "",
+            "domain": domain or "",
+            "password": "",
+            "resolution_mode": "2",
+            "colordepth": "99",
+            "shareprinter": "0",
+            "shareparallel": "0",
+            "shareserial": "0",
+            "sharesmartcard": "0",
+            "sound": "off",
+            "microphone": "",
+            "cert_ignore": "1",
+            "ignore-tls-errors": "1",
+            "window_maximize": "1",
+            "scale": "1",
+            "viewmode": "1",
+        }
+        fd, tmp_path = tempfile.mkstemp(suffix=".remmina", prefix="omarchy-remmina-")
+        with os.fdopen(fd, 'w', encoding="utf-8") as fo:
+            cp.write(fo)
+        cmd = ["remmina", "-c", tmp_path]
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        return 0
+    except:
+        pass
+    # Last fallback: xfreerdp / remmina URI
     if which("xfreerdp") or which("xfreerdp3"):
         bin_name = "xfreerdp3" if which("xfreerdp3") else "xfreerdp"
         v = f"{host}:{port}" if port else host
         args = [bin_name, f"/v:{v}"]
         if username:
-            if "\\" in username or "/" in username:
-                args.append(f"/u:{username}")
-            else:
-                args.append(f"/u:{username}")
+            args.append(f"/u:{username}")
         if domain:
             args.append(f"/d:{domain}")
-        args += ["/dynamic-resolution", "+clipboard", "/cert:ignore", "/sec:tls"]
+        args += ["/dynamic-resolution", "+clipboard", "/cert:ignore"]
         subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         return 0
-    # fallback: remmina URI — handle domain\user
     user_part = ""
     if username:
         u = f"{domain}\\{username}" if domain and "\\" not in username else username
@@ -152,12 +204,12 @@ def launch_spice(host, port, username):
     subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     return 0
 
-def launch(protocol, host, port, username, domain=""):
+def launch(protocol, host, port, username, domain="", server_name=""):
     p = (protocol or "RDP").upper()
     if p == "SSH" or p == "SFTP":
         return launch_ssh(host, port, username)
     elif p == "RDP":
-        return launch_rdp(host, port, username, domain)
+        return launch_rdp(host, port, username, domain, server_name)
     elif p == "VNC":
         return launch_vnc(host, port, username)
     elif p == "SPICE":
@@ -205,7 +257,6 @@ def main():
         for s in servers:
             if s.get("id") == sid:
                 s["lastUsed"] = int(time.time() * 1000)
-                # ensure favorite field exists
                 if "favorite" not in s:
                     s["favorite"] = False
                 Path(STORE_FILE).parent.mkdir(parents=True, exist_ok=True)
@@ -216,7 +267,7 @@ def main():
                 break
     except Exception:
         pass
-    sys.exit(launch(srv.get("protocol", "RDP"), host, srv.get("port", ""), srv.get("username", ""), srv.get("domain", "")))
+    sys.exit(launch(srv.get("protocol", "RDP"), host, srv.get("port", ""), srv.get("username", ""), srv.get("domain", ""), srv.get("name", "")))
 
 if __name__ == "__main__":
     main()

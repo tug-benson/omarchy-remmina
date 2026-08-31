@@ -348,20 +348,23 @@ Panel {
                     // separator
                     Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Qt.rgba(1,1,1,0.08) }
 
-                    // ── Help: CSV format ──
+                    // ── Help: Import formats ──
                     ColumnLayout {
                         Layout.fillWidth: true
-                        spacing: Style.space(2)
+                        spacing: Style.space(4)
                         visible: service ? service.showImportHelp : false
-                        Label { textFormat: Text.PlainText; text: "CSV format expected:"; font.family: fontFam; font.pixelSize: capSize; font.bold: true; color: cFg }
-                        Label { Layout.fillWidth: true; textFormat: Text.PlainText; text: "name,host,protocol,port,username,group,notes"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: capSize-1; color: cMuted; wrapMode: Text.Wrap }
-                        Label { Layout.fillWidth: true; textFormat: Text.PlainText; text: "Example: srv01,host.example.com,RDP,3389,admin,Windows,prod"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: capSize-1; color: cMuted; wrapMode: Text.Wrap }
-                        Label { Layout.fillWidth: true; textFormat: Text.PlainText; text: "TXT fallback: name;host;protocol;port;username;group"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: capSize-1; color: cMuted; wrapMode: Text.Wrap }
+                        Label { textFormat: Text.PlainText; text: "Import formats"; font.family: fontFam; font.pixelSize: capSize; font.bold: true; color: cFg }
+                        Label { Layout.fillWidth: true; textFormat: Text.PlainText; text: "CSV: name,host,protocol,port,username,domain,group,notes"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: capSize-1; color: cMuted; wrapMode: Text.Wrap }
+                        Label { Layout.fillWidth: true; textFormat: Text.PlainText; text: "  ex: srv01,host.example.com,RDP,3389,admin,EXAMPLE,Windows,prod"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: capSize-1; color: cMuted; wrapMode: Text.Wrap }
+                        Label { Layout.fillWidth: true; textFormat: Text.PlainText; text: "TXT: name;host;protocol;port;username;domain;group"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: capSize-1; color: cMuted; wrapMode: Text.Wrap }
+                        Label { Layout.fillWidth: true; textFormat: Text.PlainText; text: "JSON: [{name,host,protocol,port,username,domain,group,notes}]"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: capSize-1; color: cMuted; wrapMode: Text.Wrap }
+                        Label { Layout.fillWidth: true; textFormat: Text.PlainText; text: "Remmina: imports ~/.local/share/remmina/*.remmina (name,server,protocol,username,domain,group)"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: capSize-1; color: cMuted; wrapMode: Text.Wrap }
+                        Label { Layout.fillWidth: true; textFormat: Text.PlainText; text: "SSH: imports ~/.ssh/config (Host,HostName,User,Port) → Linux group"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: capSize-1; color: cMuted; wrapMode: Text.Wrap }
                         Button { text: "Hide"; fontSize: capSize; Layout.preferredWidth: Style.space(60); onClicked: if(service) service.showImportHelp=false }
                     }
                     RowLayout {
                         Layout.fillWidth: false
-                        Label { textFormat: Text.PlainText; text: "ℹ CSV/TXT help"; font.family: fontFam; font.pixelSize: capSize; color: cAccent; opacity: 0.9
+                        Label { textFormat: Text.PlainText; text: "ℹ Import help"; font.family: fontFam; font.pixelSize: capSize; color: cAccent; opacity: 0.9
                             MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: if(service) service.showImportHelp = !service.showImportHelp } }
                     }
 
@@ -578,22 +581,19 @@ Panel {
                                             border.color: dragArea.containsMouse ? Util.alpha(cAccent,0.30) : Util.alpha(cFg, 0.08)
                                             border.width: 1
                                             // Drag support
-                                            Drag.active: dragArea.drag.active
                                             Drag.hotSpot.x: width/2
                                             Drag.hotSpot.y: height/2
                                             Drag.mimeData: { "text/plain": modelData.id }
                                             Drag.dragType: Drag.Automatic
-                                            opacity: Drag.active ? 0.6 : 1.0
+                                            opacity: dragArea.drag.active ? 0.6 : 1.0
 
                                             // Drag area (whole row, behind buttons but with higher z for drag handle)
                                             MouseArea {
                                                 id: dragArea
                                                 anchors.fill: parent
-                                                hoverEnabled: true
-                                                drag.target: rowDel
+                                                hoverEnabled: true                                                drag.target: rowDel
                                                 drag.axis: Drag.XAndYAxis
-                                                onPressed: dragArea.drag.active = true
-                                                onReleased: dragArea.drag.active = false
+                                                // drag handled via Drag.mimeData + drag.target
                                                 propagateComposedEvents: true
                                                 onClicked: function(mouse) { mouse.accepted = false }
                                             }
@@ -613,10 +613,8 @@ Panel {
                                                     opacity: 0.5
                                                     MouseArea {
                                                         anchors.fill: parent
-                                                        cursorShape: Qt.ClosedHandCursor
-                                                        drag.target: rowDel
-                                                        onPressed: dragArea.drag.active = true
-                                                        onReleased: dragArea.drag.active = false
+                                                        cursorShape: Qt.ClosedHandCursor                                                drag.target: rowDel
+                                                        // drag handle
                                                     }
                                                 }
                                                 // protocol glyph box
@@ -674,7 +672,7 @@ Panel {
                                                     }
                                                     // Launch
                                                     Button {
-                                                        iconText: modelData.protocol==="SSH" ? "" : modelData.protocol==="RDP" ? "" : modelData.protocol==="VNC" ? "󰢹" : "󰹑"
+                                                        iconText: modelData.protocol==="SSH" ? "" : modelData.protocol==="RDP" ? "" : modelData.protocol==="VNC" ? "󰢹" : "󰹑"
                                                         fontFamily: "JetBrainsMono Nerd Font"
                                                         fontSize: bodySize
                                                         tooltipText: "Connect ("+modelData.protocol+")"
@@ -825,20 +823,16 @@ Panel {
                                         color: dragAreaCustom.containsMouse ? Util.alpha(cAccent,0.12) : Util.alpha(cFg, 0.04)
                                         border.color: dragAreaCustom.containsMouse ? Util.alpha(cAccent,0.30) : Util.alpha(cFg, 0.08)
                                         border.width: 1
-                                        Drag.active: dragAreaCustom.drag.active
                                         Drag.hotSpot.x: width/2
                                         Drag.hotSpot.y: height/2
                                         Drag.mimeData: { "text/plain": modelData.id }
                                         Drag.dragType: Drag.Automatic
-                                        opacity: Drag.active ? 0.6 : 1.0
+                                        opacity: dragAreaCustom.drag.active ? 0.6 : 1.0
                                         MouseArea {
                                             id: dragAreaCustom
                                             anchors.fill: parent
-                                            hoverEnabled: true
-                                            drag.target: rowDelCustom
-                                            onPressed: dragAreaCustom.drag.active = true
-                                            onReleased: dragAreaCustom.drag.active = false
-                                            propagateComposedEvents: true
+                                            hoverEnabled: true                                                drag.target: rowDel
+propagateComposedEvents: true
                                             onClicked: function(mouse){ mouse.accepted=false }
                                         }
                                         RowLayout {
@@ -846,10 +840,10 @@ Panel {
                                             anchors.leftMargin: Style.space(8)
                                             anchors.rightMargin: Style.space(4)
                                             spacing: Style.space(6)
-                                            Label { textFormat: Text.PlainText; text: "󰍝"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: capSize; color: cMuted; opacity: 0.5; MouseArea { anchors.fill: parent; cursorShape: Qt.ClosedHandCursor; drag.target: rowDelCustom; onPressed: dragAreaCustom.drag.active=true; onReleased: dragAreaCustom.drag.active=false } }
+                                            Label { textFormat: Text.PlainText; text: "󰍝"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: capSize; color: cMuted; opacity: 0.5; MouseArea { anchors.fill: parent; cursorShape: Qt.ClosedHandCursor;                                                drag.target: rowDel
                                             Rectangle { width: Style.space(28); height: Style.space(28); radius: Style.space(4); color: Util.alpha(root.protoColor(modelData.protocol),0.14); border.color: Util.alpha(root.protoColor(modelData.protocol),0.35); border.width: 1; Label { anchors.centerIn: parent; textFormat: Text.PlainText; text: root.protoGlyph(modelData.protocol); font.family: "JetBrainsMono Nerd Font"; font.pixelSize: bodySize; color: root.protoColor(modelData.protocol) } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 0; Label { Layout.fillWidth: true; textFormat: Text.PlainText; text: modelData.name; font.family: fontFam; font.pixelSize: bodySize; color: cFg; elide: Text.ElideRight } Label { Layout.fillWidth: true; textFormat: Text.PlainText; text: (modelData.domain && modelData.username ? modelData.domain+"\\"+modelData.username+"@" : modelData.username ? modelData.username+"@" : "")+modelData.host+(modelData.port ? ":"+modelData.port:"")+" · "+modelData.protocol; font.family: fontFam; font.pixelSize: capSize; color: cMuted; elide: Text.ElideRight } }
-                                            RowLayout { spacing: Style.space(2); Button { iconText: modelData.favorite===true ? "" : ""; fontFamily: "JetBrainsMono Nerd Font"; fontSize: capSize; tooltipText: modelData.favorite===true ? "Remove from favorites" : "Add to favorites"; Layout.preferredWidth: Style.space(26); Layout.preferredHeight: Style.space(26); onClicked: if(service) service.toggleFavorite(modelData.id) } Button { iconText: modelData.protocol==="SSH" ? "" : modelData.protocol==="RDP" ? "" : modelData.protocol==="VNC" ? "󰢹" : "󰹑"; fontFamily: "JetBrainsMono Nerd Font"; fontSize: bodySize; tooltipText: "Connect ("+modelData.protocol+")"; Layout.preferredWidth: Style.space(30); Layout.preferredHeight: Style.space(26); onClicked: if(service) service.launchServer(modelData.id) } Button { iconText: ""; fontFamily: "JetBrainsMono Nerd Font"; fontSize: capSize; tooltipText: "Edit"; Layout.preferredWidth: Style.space(26); Layout.preferredHeight: Style.space(26); onClicked: root.openEdit(modelData) } Button { iconText: ""; fontFamily: "JetBrainsMono Nerd Font"; fontSize: capSize; tooltipText: "Delete"; Layout.preferredWidth: Style.space(26); Layout.preferredHeight: Style.space(26); onClicked: { root.confirmTargetId=modelData.id; root.confirmTargetName=modelData.name; root.confirmVisible=true } } }
+                                            RowLayout { spacing: Style.space(2); Button { iconText: modelData.favorite===true ? "" : ""; fontFamily: "JetBrainsMono Nerd Font"; fontSize: capSize; tooltipText: modelData.favorite===true ? "Remove from favorites" : "Add to favorites"; Layout.preferredWidth: Style.space(26); Layout.preferredHeight: Style.space(26); onClicked: if(service) service.toggleFavorite(modelData.id) } Button { iconText: modelData.protocol==="SSH" ? "" : modelData.protocol==="RDP" ? "" : modelData.protocol==="VNC" ? "󰢹" : "󰹑"; fontFamily: "JetBrainsMono Nerd Font"; fontSize: bodySize; tooltipText: "Connect ("+modelData.protocol+")"; Layout.preferredWidth: Style.space(30); Layout.preferredHeight: Style.space(26); onClicked: if(service) service.launchServer(modelData.id) } Button { iconText: ""; fontFamily: "JetBrainsMono Nerd Font"; fontSize: capSize; tooltipText: "Edit"; Layout.preferredWidth: Style.space(26); Layout.preferredHeight: Style.space(26); onClicked: root.openEdit(modelData) } Button { iconText: ""; fontFamily: "JetBrainsMono Nerd Font"; fontSize: capSize; tooltipText: "Delete"; Layout.preferredWidth: Style.space(26); Layout.preferredHeight: Style.space(26); onClicked: { root.confirmTargetId=modelData.id; root.confirmTargetName=modelData.name; root.confirmVisible=true } } }
                                         }
                                     }
                                 }
@@ -922,20 +916,16 @@ Panel {
                                         color: dragAreaDefault.containsMouse ? Util.alpha(cAccent,0.12) : Util.alpha(cFg, 0.04)
                                         border.color: dragAreaDefault.containsMouse ? Util.alpha(cAccent,0.30) : Util.alpha(cFg, 0.08)
                                         border.width: 1
-                                        Drag.active: dragAreaDefault.drag.active
                                         Drag.hotSpot.x: width/2
                                         Drag.hotSpot.y: height/2
                                         Drag.mimeData: { "text/plain": modelData.id }
                                         Drag.dragType: Drag.Automatic
-                                        opacity: Drag.active ? 0.6 : 1.0
+                                        opacity: dragAreaDefault.drag.active ? 0.6 : 1.0
                                         MouseArea {
                                             id: dragAreaDefault
                                             anchors.fill: parent
-                                            hoverEnabled: true
-                                            drag.target: rowDelDefault
-                                            onPressed: dragAreaDefault.drag.active = true
-                                            onReleased: dragAreaDefault.drag.active = false
-                                            propagateComposedEvents: true
+                                            hoverEnabled: true                                                drag.target: rowDel
+propagateComposedEvents: true
                                             onClicked: function(mouse){ mouse.accepted=false }
                                         }
                                         RowLayout {
@@ -943,10 +933,10 @@ Panel {
                                             anchors.leftMargin: Style.space(8)
                                             anchors.rightMargin: Style.space(4)
                                             spacing: Style.space(6)
-                                            Label { textFormat: Text.PlainText; text: "󰍝"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: capSize; color: cMuted; opacity: 0.5; MouseArea { anchors.fill: parent; cursorShape: Qt.ClosedHandCursor; drag.target: rowDelDefault; onPressed: dragAreaDefault.drag.active=true; onReleased: dragAreaDefault.drag.active=false } }
+                                            Label { textFormat: Text.PlainText; text: "󰍝"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: capSize; color: cMuted; opacity: 0.5; MouseArea { anchors.fill: parent; cursorShape: Qt.ClosedHandCursor;                                                drag.target: rowDel
                                             Rectangle { width: Style.space(28); height: Style.space(28); radius: Style.space(4); color: Util.alpha(root.protoColor(modelData.protocol),0.14); border.color: Util.alpha(root.protoColor(modelData.protocol),0.35); border.width: 1; Label { anchors.centerIn: parent; textFormat: Text.PlainText; text: root.protoGlyph(modelData.protocol); font.family: "JetBrainsMono Nerd Font"; font.pixelSize: bodySize; color: root.protoColor(modelData.protocol) } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 0; Label { Layout.fillWidth: true; textFormat: Text.PlainText; text: modelData.name; font.family: fontFam; font.pixelSize: bodySize; color: cFg; elide: Text.ElideRight } Label { Layout.fillWidth: true; textFormat: Text.PlainText; text: (modelData.domain && modelData.username ? modelData.domain+"\\"+modelData.username+"@" : modelData.username ? modelData.username+"@" : "")+modelData.host+(modelData.port ? ":"+modelData.port:"")+" · "+modelData.protocol; font.family: fontFam; font.pixelSize: capSize; color: cMuted; elide: Text.ElideRight } }
-                                            RowLayout { spacing: Style.space(2); Button { iconText: modelData.favorite===true ? "" : ""; fontFamily: "JetBrainsMono Nerd Font"; fontSize: capSize; tooltipText: modelData.favorite===true ? "Remove from favorites" : "Add to favorites"; Layout.preferredWidth: Style.space(26); Layout.preferredHeight: Style.space(26); onClicked: if(service) service.toggleFavorite(modelData.id) } Button { iconText: modelData.protocol==="SSH" ? "" : modelData.protocol==="RDP" ? "" : modelData.protocol==="VNC" ? "󰢹" : "󰹑"; fontFamily: "JetBrainsMono Nerd Font"; fontSize: bodySize; tooltipText: "Connect ("+modelData.protocol+")"; Layout.preferredWidth: Style.space(30); Layout.preferredHeight: Style.space(26); onClicked: if(service) service.launchServer(modelData.id) } Button { iconText: ""; fontFamily: "JetBrainsMono Nerd Font"; fontSize: capSize; tooltipText: "Edit"; Layout.preferredWidth: Style.space(26); Layout.preferredHeight: Style.space(26); onClicked: root.openEdit(modelData) } Button { iconText: ""; fontFamily: "JetBrainsMono Nerd Font"; fontSize: capSize; tooltipText: "Delete"; Layout.preferredWidth: Style.space(26); Layout.preferredHeight: Style.space(26); onClicked: { root.confirmTargetId=modelData.id; root.confirmTargetName=modelData.name; root.confirmVisible=true } } }
+                                            RowLayout { spacing: Style.space(2); Button { iconText: modelData.favorite===true ? "" : ""; fontFamily: "JetBrainsMono Nerd Font"; fontSize: capSize; tooltipText: modelData.favorite===true ? "Remove from favorites" : "Add to favorites"; Layout.preferredWidth: Style.space(26); Layout.preferredHeight: Style.space(26); onClicked: if(service) service.toggleFavorite(modelData.id) } Button { iconText: modelData.protocol==="SSH" ? "" : modelData.protocol==="RDP" ? "" : modelData.protocol==="VNC" ? "󰢹" : "󰹑"; fontFamily: "JetBrainsMono Nerd Font"; fontSize: bodySize; tooltipText: "Connect ("+modelData.protocol+")"; Layout.preferredWidth: Style.space(30); Layout.preferredHeight: Style.space(26); onClicked: if(service) service.launchServer(modelData.id) } Button { iconText: ""; fontFamily: "JetBrainsMono Nerd Font"; fontSize: capSize; tooltipText: "Edit"; Layout.preferredWidth: Style.space(26); Layout.preferredHeight: Style.space(26); onClicked: root.openEdit(modelData) } Button { iconText: ""; fontFamily: "JetBrainsMono Nerd Font"; fontSize: capSize; tooltipText: "Delete"; Layout.preferredWidth: Style.space(26); Layout.preferredHeight: Style.space(26); onClicked: { root.confirmTargetId=modelData.id; root.confirmTargetName=modelData.name; root.confirmVisible=true } } }
                                         }
                                     }
                                 }
