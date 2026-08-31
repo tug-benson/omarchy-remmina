@@ -89,7 +89,9 @@ def import_records(records):
             "username": username,
             "domain": domain,
             "group": group,
-            "notes": notes
+            "notes": notes,
+            "favorite": False,
+            "lastUsed": 0
         }
         servers.append(srv)
         keys.add(key)
