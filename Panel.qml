@@ -170,13 +170,11 @@ Panel {
 
                     // ── Counters (ring gauges quadrant-style, centred) ──
                     RowLayout {
+                        Layout.fillWidth: true
                         Layout.alignment: Qt.AlignHCenter
-                        Layout.fillWidth: false
                         spacing: Style.space(14)
                         Layout.topMargin: Style.space(4)
-                        // center the row itself in the column
-                    }
-                        // Windows — fraction of total
+                        Layout.preferredHeight: Style.space(90)
                         Gauge {
                             Layout.alignment: Qt.AlignHCenter
                             size: Style.space(74)
@@ -188,7 +186,6 @@ Panel {
                             trackColor: Util.alpha(cAccent, 0.12)
                             fraction: service && service.totalCount > 0 ? service.windowsCount / service.totalCount : 0
                         }
-                        // Linux
                         Gauge {
                             Layout.alignment: Qt.AlignHCenter
                             size: Style.space(74)
@@ -200,7 +197,6 @@ Panel {
                             trackColor: Util.alpha(cFg, 0.10)
                             fraction: service && service.totalCount > 0 ? service.linuxCount / service.totalCount : 0
                         }
-                        // Total — always full ring, glyph only
                         Gauge {
                             Layout.alignment: Qt.AlignHCenter
                             size: Style.space(74)
@@ -610,3 +606,4 @@ Panel {
             }
         }
     }
+}
