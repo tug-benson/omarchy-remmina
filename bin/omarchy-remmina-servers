@@ -89,6 +89,7 @@ def validate_server(obj, is_update=False):
         except:
             return None, "invalid port"
     username = sanitize(obj.get("username"), 64)
+    domain = sanitize(obj.get("domain"), 64)
     group = sanitize(obj.get("group"), 64) or "General"
     notes = sanitize(obj.get("notes"), 256)
 
@@ -99,6 +100,7 @@ def validate_server(obj, is_update=False):
         "protocol": protocol,
         "port": port,
         "username": username,
+        "domain": domain,
         "group": group,
         "notes": notes
     }
@@ -218,7 +220,7 @@ Commands:
   stats                Stats: total/windows/linux/other
   help
 Expected JSON for add/update:
-  { name, host, protocol(RDP|SSH|VNC|SPICE), port, username, group, notes }
+  { name, host, protocol(RDP|SSH|VNC|SPICE), port, username, domain, group, notes }
 """, file=sys.stderr)
 
 if __name__ == "__main__":

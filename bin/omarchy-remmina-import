@@ -77,6 +77,7 @@ def import_records(records):
             errors.append(f"port out of range for {name}: {port}")
             port = ""
         username = sanitize_name(rec.get("username"))[:64]
+        domain = sanitize_name(rec.get("domain"))[:64]
         group = sanitize_name(rec.get("group")) or "General"
         notes = re.sub(r'[\x00-\x1f\x7f]','', str(rec.get("notes","")).strip())[:256]
         srv = {
@@ -86,6 +87,7 @@ def import_records(records):
             "protocol": protocol,
             "port": port,
             "username": username,
+            "domain": domain,
             "group": group,
             "notes": notes
         }
@@ -119,6 +121,7 @@ def import_csv_file(path):
                 "protocol": norm.get("protocol") or norm.get("proto") or norm.get("type") or "",
                 "port": norm.get("port") or "",
                 "username": norm.get("username") or norm.get("user") or norm.get("login") or "",
+                "domain": norm.get("domain") or "",
                 "group": norm.get("group") or norm.get("groupe") or "",
                 "notes": norm.get("notes") or norm.get("note") or norm.get("comment") or ""
             })
@@ -146,6 +149,7 @@ def import_csv_stdin():
                 "protocol": norm.get("protocol") or "",
                 "port": norm.get("port") or "",
                 "username": norm.get("username") or norm.get("user") or "",
+                "domain": norm.get("domain") or "",
                 "group": norm.get("group") or "",
                 "notes": norm.get("notes") or ""
             })
@@ -170,15 +174,16 @@ def import_txt_file(path):
         # split by ; or , or \t
         parts = re.split(r'[;\t,|]', line)
         parts = [p.strip() for p in parts]
-        # Expected: name,host,protocol,port,username,group
+        # Expected: name,host,protocol,port,username,domain,group
         rec = {
             "name": parts[0] if len(parts)>0 else "",
             "host": parts[1] if len(parts)>1 else "",
             "protocol": parts[2] if len(parts)>2 else "",
             "port": parts[3] if len(parts)>3 else "",
             "username": parts[4] if len(parts)>4 else "",
-            "group": parts[5] if len(parts)>5 else "",
-            "notes": parts[6] if len(parts)>6 else ""
+            "domain": parts[5] if len(parts)>5 else "",
+            "group": parts[6] if len(parts)>6 else "",
+            "notes": parts[7] if len(parts)>7 else ""
         }
         records.append(rec)
     result = import_records(records)
@@ -269,6 +274,7 @@ def import_remmina():
                         host = h
                         port = p
             username = sec.get("username", "")
+            domain = sec.get("domain", "")
             group = sec.get("group", "")
             if not group:
                 # infer group from protocol
@@ -281,6 +287,7 @@ def import_remmina():
                 "protocol": protocol,
                 "port": port,
                 "username": username,
+                "domain": domain,
                 "group": group,
                 "notes": notes
             })

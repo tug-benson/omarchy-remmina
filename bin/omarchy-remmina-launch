@@ -87,33 +87,28 @@ def launch_ssh(host, port, username):
     subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     return 0
 
-def launch_rdp(host, port, username):
+def launch_rdp(host, port, username, domain=""):
     disable_remmina_tray()
-    # sanitize  — no injection: host is validated alnum._- ; port digits; username alnum.
     # Prefer xfreerdp if installed
     if which("xfreerdp") or which("xfreerdp3"):
         bin_name = "xfreerdp3" if which("xfreerdp3") else "xfreerdp"
-        # Build freerdp args
         v = f"{host}:{port}" if port else host
         args = [bin_name, f"/v:{v}"]
         if username:
-            # split domain\user if present
             if "\\" in username or "/" in username:
-                # let freerdp handle domain
                 args.append(f"/u:{username}")
             else:
                 args.append(f"/u:{username}")
-            # Add domain if stored as domain in username? Already covered
-        # dynamic resolution, clipboard
-        args += ["/dynamic-resolution", "+clipboard", "/cert:ignore"]
+        if domain:
+            args.append(f"/d:{domain}")
+        args += ["/dynamic-resolution", "+clipboard", "/cert:ignore", "/sec:tls"]
         subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         return 0
-    # fallback: remmina URI
-    # remmina -c rdp://[username@]host[:port]
+    # fallback: remmina URI — handle domain\user
     user_part = ""
     if username:
-        # escape @ and : in username? Keep simple: urlencode not needed for remmina but avoid @ break
-        safe_user = username.replace("@", "%40").replace(":", "%3A").replace("/", "%2F")
+        u = f"{domain}\\{username}" if domain and "\\" not in username else username
+        safe_user = u.replace("@", "%40").replace(":", "%3A").replace("/", "%2F")
         user_part = safe_user + "@"
     port_part = f":{port}" if port else ""
     uri = f"rdp://{user_part}{host}{port_part}"
@@ -157,18 +152,17 @@ def launch_spice(host, port, username):
     subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     return 0
 
-def launch(protocol, host, port, username):
+def launch(protocol, host, port, username, domain=""):
     p = (protocol or "RDP").upper()
     if p == "SSH" or p == "SFTP":
         return launch_ssh(host, port, username)
     elif p == "RDP":
-        return launch_rdp(host, port, username)
+        return launch_rdp(host, port, username, domain)
     elif p == "VNC":
         return launch_vnc(host, port, username)
     elif p == "SPICE":
         return launch_spice(host, port, username)
     else:
-        # generic: try remmina with protocol lower
         disable_remmina_tray()
         proto = p.lower()
         uri = f"{proto}://{host}"
@@ -180,16 +174,18 @@ def launch(protocol, host, port, username):
 def main():
     if len(sys.argv) < 2:
         print("Usage: omarchy-remmina-launch <server-id>", file=sys.stderr)
-        print("       omarchy-remmina-launch --direct <PROTO> <host> <port> <username>", file=sys.stderr)
+        print("       omarchy-remmina-launch --direct <PROTO> <host> <port> <username> [domain]", file=sys.stderr)
         sys.exit(1)
     if sys.argv[1] == "--direct":
         if len(sys.argv) < 6:
-            print("FAIL: --direct needs proto host port username", file=sys.stderr)
+            print("FAIL: --direct needs proto host port username [domain]", file=sys.stderr)
             sys.exit(1)
         proto, host, port, username = sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+        domain = sys.argv[6] if len(sys.argv) > 6 else ""
         port = port if port and port != "-" else ""
         username = username if username and username != "-" else ""
-        sys.exit(launch(proto, host, port, username))
+        domain = domain if domain and domain != "-" else ""
+        sys.exit(launch(proto, host, port, username, domain))
     sid = sys.argv[1]
     srv = find_server(sid)
     if not srv:
@@ -199,11 +195,10 @@ def main():
     if not host:
         print("FAIL: host empty", file=sys.stderr)
         sys.exit(1)
-    # safety: reject suspicious host containing shell meta
     if any(c in host for c in ";&|`$(){}[]!#\"'"):
         print("FAIL: invalid host", file=sys.stderr)
         sys.exit(1)
-    sys.exit(launch(srv.get("protocol", "RDP"), host, srv.get("port", ""), srv.get("username", "")))
+    sys.exit(launch(srv.get("protocol", "RDP"), host, srv.get("port", ""), srv.get("username", ""), srv.get("domain", "")))
 
 if __name__ == "__main__":
     main()

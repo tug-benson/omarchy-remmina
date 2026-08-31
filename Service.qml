@@ -86,7 +86,7 @@ Item {
         var out=[]
         for (var i=0;i<root.servers.length;i++) {
             var s=root.servers[i]
-            var hay = ((s.name||"")+" "+(s.host||"")+" "+(s.protocol||"")+" "+(s.group||"")+" "+(s.username||"")+" "+(s.notes||"")).toLowerCase()
+            var hay = ((s.name||"")+" "+(s.host||"")+" "+(s.protocol||"")+" "+(s.group||"")+" "+(s.username||"")+" "+(s.domain||"")+" "+(s.notes||"")).toLowerCase()
             if (hay.indexOf(q) !== -1) out.push(s)
         }
         root.filteredServers = out

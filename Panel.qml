@@ -43,19 +43,20 @@ Panel {
     property string formProto: "RDP"
     property string formPort: ""
     property string formUser: ""
+    property string formDomain: ""
     property string formGroup: ""
     property string formNotes: ""
     property string formError: ""
 
     function resetForm() {
-        editId=""; formName=""; formHost=""; formProto="RDP"; formPort=""; formUser=""; formGroup=""; formNotes=""; formError=""
+        editId=""; formName=""; formHost=""; formProto="RDP"; formPort=""; formUser=""; formDomain=""; formGroup=""; formNotes=""; formError=""
     }
     function openAdd() {
         resetForm()
         if (service) service.showAddForm = true
     }
     function openEdit(srv) {
-        editId=srv.id; formName=srv.name; formHost=srv.host; formProto=srv.protocol; formPort=srv.port||""; formUser=srv.username||""; formGroup=srv.group||""; formNotes=srv.notes||""; formError=""
+        editId=srv.id; formName=srv.name; formHost=srv.host; formProto=srv.protocol; formPort=srv.port||""; formUser=srv.username||""; formDomain=srv.domain||""; formGroup=srv.group||""; formNotes=srv.notes||""; formError=""
         if (service) service.showAddForm = true
     }
     function submitForm() {
@@ -69,6 +70,7 @@ Panel {
             protocol: formProto,
             port: formPort.trim(),
             username: formUser.trim(),
+            domain: formDomain.trim(),
             group: formGroup.trim() || "General",
             notes: formNotes.trim()
         }
@@ -164,61 +166,51 @@ Panel {
                             Layout.preferredWidth: Style.space(26)
                             onClicked: if (service) service.refresh()
                         }
-                        Button {
-                            iconText: ""
-                            fontFamily: "JetBrainsMono Nerd Font"
-                            fontSize: bodySize
-                            tooltipText: "Disable Remmina tray icon"
-                            Layout.preferredWidth: Style.space(26)
-                            onClicked: if (service) service.fixTray()
-                        }
                     }
 
-                    // ── Counters (circular gauges) ──
+                    // ── Counters (ring gauges quadrant-style, centred) ──
                     RowLayout {
-                        Layout.fillWidth: true
-                        spacing: Style.space(8)
-                        Layout.topMargin: Style.space(2)
-                        // Windows
-                        ColumnLayout {
-                            Layout.fillWidth: true; spacing: Style.space(4)
-                            Item {
-                                Layout.alignment: Qt.AlignHCenter
-                                width: Style.space(56); height: Style.space(56)
-                                Rectangle { anchors.fill: parent; radius: width/2; color: Util.alpha(cAccent,0.12); border.color: Util.alpha(cAccent,0.5); border.width: 2 }
-                                ColumnLayout { anchors.centerIn: parent; spacing: 0
-                                    Label { Layout.alignment: Qt.AlignHCenter; textFormat: Text.PlainText; text: service ? String(service.windowsCount) : "--"; font.family: fontFam; font.pixelSize: titleSize; font.bold: true; color: cAccent }
-                                    Label { Layout.alignment: Qt.AlignHCenter; textFormat: Text.PlainText; text: "Windows"; font.family: fontFam; font.pixelSize: capSize-1; color: cMuted }
-                                }
-                                Label { anchors.bottom: parent.bottom; anchors.horizontalCenter: parent.horizontalCenter; anchors.bottomMargin: -2; textFormat: Text.PlainText; text: ""; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 9; color: cAccent }
-                            }
+                        Layout.alignment: Qt.AlignHCenter
+                        Layout.fillWidth: false
+                        spacing: Style.space(14)
+                        Layout.topMargin: Style.space(4)
+                        // center the row itself in the column
+                    }
+                        // Windows — fraction of total
+                        Gauge {
+                            Layout.alignment: Qt.AlignHCenter
+                            size: Style.space(74)
+                            thickness: Style.space(7)
+                            glyph: ""
+                            glyphSize: Style.font.title + 6
+                            label: "Windows"
+                            color: cAccent
+                            trackColor: Util.alpha(cAccent, 0.12)
+                            fraction: service && service.totalCount > 0 ? service.windowsCount / service.totalCount : 0
                         }
                         // Linux
-                        ColumnLayout {
-                            Layout.fillWidth: true; spacing: Style.space(4)
-                            Item {
-                                Layout.alignment: Qt.AlignHCenter
-                                width: Style.space(56); height: Style.space(56)
-                                Rectangle { anchors.fill: parent; radius: width/2; color: Util.alpha(cFg,0.06); border.color: Util.alpha(cFg,0.3); border.width: 2 }
-                                ColumnLayout { anchors.centerIn: parent; spacing: 0
-                                    Label { Layout.alignment: Qt.AlignHCenter; textFormat: Text.PlainText; text: service ? String(service.linuxCount) : "--"; font.family: fontFam; font.pixelSize: titleSize; font.bold: true; color: cFg }
-                                    Label { Layout.alignment: Qt.AlignHCenter; textFormat: Text.PlainText; text: "Linux"; font.family: fontFam; font.pixelSize: capSize-1; color: cMuted }
-                                }
-                                Label { anchors.bottom: parent.bottom; anchors.horizontalCenter: parent.horizontalCenter; anchors.bottomMargin: -2; textFormat: Text.PlainText; text: ""; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: 9; color: cFg }
-                            }
+                        Gauge {
+                            Layout.alignment: Qt.AlignHCenter
+                            size: Style.space(74)
+                            thickness: Style.space(7)
+                            glyph: ""
+                            glyphSize: Style.font.title + 6
+                            label: "Linux"
+                            color: cFg
+                            trackColor: Util.alpha(cFg, 0.10)
+                            fraction: service && service.totalCount > 0 ? service.linuxCount / service.totalCount : 0
                         }
-                        // Total
-                        ColumnLayout {
-                            Layout.fillWidth: true; spacing: Style.space(4)
-                            Item {
-                                Layout.alignment: Qt.AlignHCenter
-                                width: Style.space(56); height: Style.space(56)
-                                Rectangle { anchors.fill: parent; radius: width/2; color: Util.alpha(cMuted,0.12); border.color: Util.alpha(cMuted,0.4); border.width: 2 }
-                                ColumnLayout { anchors.centerIn: parent; spacing: 0
-                                    Label { Layout.alignment: Qt.AlignHCenter; textFormat: Text.PlainText; text: service ? String(service.totalCount) : "--"; font.family: fontFam; font.pixelSize: titleSize; font.bold: true; color: cFg }
-                                    Label { Layout.alignment: Qt.AlignHCenter; textFormat: Text.PlainText; text: "Total"; font.family: fontFam; font.pixelSize: capSize-1; color: cMuted }
-                                }
-                            }
+                        // Total — always full ring, glyph only
+                        Gauge {
+                            Layout.alignment: Qt.AlignHCenter
+                            size: Style.space(74)
+                            thickness: Style.space(7)
+                            glyph: "󰢹"
+                            glyphSize: Style.font.title + 4
+                            label: "Total"
+                            color: cMuted
+                            trackColor: Util.alpha(cMuted, 0.10)
+                            fraction: service && service.totalCount > 0 ? 1 : 0
                         }
                     }
 
@@ -352,6 +344,8 @@ Panel {
                                 TextField { Layout.fillWidth: true; text: root.formPort; placeholderText: "3389 / 22 / 5900"; font.pixelSize: capSize; inputMethodHints: Qt.ImhDigitsOnly; onTextChanged: root.formPort=text }
                                 Label { textFormat: Text.PlainText; text: "Username"; font.family: fontFam; font.pixelSize: capSize; color: cMuted }
                                 TextField { Layout.fillWidth: true; text: root.formUser; placeholderText: "admin"; font.pixelSize: capSize; onTextChanged: root.formUser=text }
+                                Label { textFormat: Text.PlainText; text: "Domain"; font.family: fontFam; font.pixelSize: capSize; color: cMuted }
+                                TextField { Layout.fillWidth: true; text: root.formDomain; placeholderText: "EXAMPLE (for RDP)"; font.pixelSize: capSize; onTextChanged: root.formDomain=text }
                                 Label { textFormat: Text.PlainText; text: "Group"; font.family: fontFam; font.pixelSize: capSize; color: cMuted }
                                 TextField { Layout.fillWidth: true; text: root.formGroup; placeholderText: "Windows / Linux / Infra"; font.pixelSize: capSize; onTextChanged: root.formGroup=text }
                             }
@@ -487,7 +481,7 @@ Panel {
                                                     Label {
                                                         Layout.fillWidth: true
                                                         textFormat: Text.PlainText
-                                                        text: (modelData.username ? modelData.username+"@" : "") + modelData.host + (modelData.port ? ":"+modelData.port : "") + " · " + modelData.protocol
+                                                        text: (modelData.domain && modelData.username ? modelData.domain + "\\" + modelData.username + "@" : modelData.username ? modelData.username+"@" : "") + modelData.host + (modelData.port ? ":"+modelData.port : "") + " · " + modelData.protocol
                                                         font.family: fontFam
                                                         font.pixelSize: capSize
                                                         color: cMuted
