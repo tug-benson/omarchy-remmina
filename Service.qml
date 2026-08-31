@@ -23,6 +23,7 @@ Item {
     property string lastError: ""
     property string lastImport: ""
     property bool busy: false
+    readonly property int recentLimit: 5
 
     // collapsed groups: map groupName -> bool (true = collapsed)
     property var collapsedGroups: ({})
@@ -96,12 +97,15 @@ Item {
     function recalcStats() {
         var total = servers.length
         var win=0, lin=0
+        var fav=0, rec=0
         var groups={}
         for (var i=0;i<servers.length;i++) {
             var s=servers[i]
             var p=(s.protocol||"").toUpperCase()
             if (p==="RDP") win++
             else if (p==="SSH" || p==="VNC" || p==="SPICE" || p==="SFTP") lin++
+            if (s.favorite === true) fav++
+            if (s.lastUsed && s.lastUsed > 0) rec++
             var g=s.group||"General"
             groups[g]=(groups[g]||0)+1
         }
@@ -110,6 +114,12 @@ Item {
         root.linuxCount=lin
         root.otherCount=Math.max(0,total-win-lin)
         var arr=[]
+        // Virtual groups on top: Favorites, Recent
+        if (fav > 0) arr.push({group: "⭐ Favorites", count: fav})
+        if (rec > 0) {
+            var n = Math.min(rec, root.recentLimit)
+            arr.push({group: "🕘 Recent", count: n})
+        }
         var keys=Object.keys(groups).sort()
         for (var j=0;j<keys.length;j++) arr.push({group: keys[j], count: groups[keys[j]]})
         root.groupCounts=arr
@@ -167,6 +177,8 @@ Item {
     Process { id: launchProc; stdout: StdioCollector {waitForEnd:true}
         onExited: function(c){
             if (c!==0) root.lastError=stdout.text.trim() || "Launch failed — check dependencies (freerdp/virt-viewer/openssh)"
+            // Recent updated via launch script's lastUsed touch — refresh to show
+            Qt.callLater(root.refresh)
         }
     }
     function launchServer(id) {
@@ -174,9 +186,24 @@ Item {
         launchProc.command = ["python3", root.scriptPath("omarchy-remmina-launch"), id]
         launchProc.running=true
     }
-    function launchDirect(protocol, host, port, username) {
-        launchProc.command = ["python3", root.scriptPath("omarchy-remmina-launch"), "--direct", protocol, host, port||"-", username||"-"]
+    function launchDirect(protocol, host, port, username, domain) {
+        launchProc.command = ["python3", root.scriptPath("omarchy-remmina-launch"), "--direct", protocol, host, port||"-", username||"-", domain||"-"]
         launchProc.running=true
+    }
+
+    // ── Favorite ──
+    Process { id: favProc; stdout: StdioCollector {waitForEnd:true}
+        onExited: function(c){
+            if (c===0) root.refresh()
+            else root.lastError=stdout.text.trim() || "Favorite toggle failed"
+        }
+    }
+    function toggleFavorite(id) {
+        // Find current state
+        var cur=false
+        for (var i=0;i<root.servers.length;i++) if (root.servers[i].id===id) { cur=root.servers[i].favorite===true; break }
+        favProc.command=["python3", root.scriptPath("omarchy-remmina-servers"), "favorite", id, cur ? "0" : "1"]
+        favProc.running=true
     }
 
     // ── Import ──
@@ -241,9 +268,20 @@ Item {
     }
     function pickImport() { csvPicker.running=true }
 
-    // Helpers for UI: grouped model
+    // Helpers for UI: grouped model (handles virtual groups)
     function serversForGroup(g) {
-        var q=(root.searchText||"").toLowerCase().trim()
+        if (g === "⭐ Favorites") {
+            var fav=[]
+            for (var i=0;i<root.filteredServers.length;i++) if (root.filteredServers[i].favorite===true) fav.push(root.filteredServers[i])
+            return fav
+        }
+        if (g === "🕘 Recent") {
+            var rec=[]
+            for (var i=0;i<root.filteredServers.length;i++) if (root.filteredServers[i].lastUsed && root.filteredServers[i].lastUsed > 0) rec.push(root.filteredServers[i])
+            rec.sort(function(a,b){ return (b.lastUsed||0) - (a.lastUsed||0) })
+            if (rec.length > root.recentLimit) rec = rec.slice(0, root.recentLimit)
+            return rec
+        }
         var out=[]
         for (var i=0;i<root.filteredServers.length;i++) {
             var s=root.filteredServers[i]

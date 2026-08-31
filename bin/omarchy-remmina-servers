@@ -71,9 +71,7 @@ def validate_server(obj, is_update=False):
         return None, "name is required"
     if not host:
         return None, "host is required"
-    # basic host validation — allow hostname, ip, domain
     if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9._\-]*$', host):
-        # allow ipv6 bracket?
         if not re.match(r'^[\[a-fA-F0-9:\]]+$', host) and not re.match(r'^[a-zA-Z0-9.\-_:]+$', host):
             return None, "invalid host"
     protocol = normalize_protocol(obj.get("protocol"))
@@ -92,6 +90,15 @@ def validate_server(obj, is_update=False):
     domain = sanitize(obj.get("domain"), 64)
     group = sanitize(obj.get("group"), 64) or "General"
     notes = sanitize(obj.get("notes"), 256)
+    # favorite + lastUsed (persist across updates)
+    favorite = bool(obj.get("favorite") is True or str(obj.get("favorite")).lower() in ("1","true","yes"))
+    # lastUsed: epoch ms, 0 if never
+    last_used_raw = obj.get("lastUsed") or obj.get("last_used") or 0
+    try:
+        last_used = int(last_used_raw) if str(last_used_raw).strip() != "" else 0
+        if last_used < 0: last_used = 0
+    except:
+        last_used = 0
 
     server = {
         "id": sanitize(obj.get("id"), 64) or str(uuid.uuid4()),
@@ -102,7 +109,9 @@ def validate_server(obj, is_update=False):
         "username": username,
         "domain": domain,
         "group": group,
-        "notes": notes
+        "notes": notes,
+        "favorite": favorite,
+        "lastUsed": last_used
     }
     return server, None
 
@@ -151,17 +160,54 @@ def cmd_update(sid):
     except Exception as e:
         print(f"FAIL: invalid json: {e}", file=sys.stderr)
         return 1
+    servers = load_servers()
+    existing = next((s for s in servers if s.get("id") == sid), None)
+    if not existing:
+        print("FAIL: not found", file=sys.stderr)
+        return 1
+    # Preserve favorite/lastUsed if not explicitly provided
+    if "favorite" not in obj and "favourite" not in obj:
+        obj["favorite"] = existing.get("favorite", False)
+    if "lastUsed" not in obj and "last_used" not in obj:
+        obj["lastUsed"] = existing.get("lastUsed", 0)
     obj["id"] = sid
     server, err = validate_server(obj)
     if err:
         print(f"FAIL: {err}", file=sys.stderr)
         return 1
-    servers = load_servers()
     for i, s in enumerate(servers):
         if s.get("id") == sid:
             servers[i] = server
             save_servers(servers)
             print(json.dumps(server, ensure_ascii=False))
+            return 0
+    print("FAIL: not found", file=sys.stderr)
+    return 1
+
+def cmd_favorite(sid, val):
+    servers = load_servers()
+    for i, s in enumerate(servers):
+        if s.get("id") == sid:
+            servers[i]["favorite"] = bool(val)
+            # Ensure lastUsed exists
+            if "lastUsed" not in servers[i]:
+                servers[i]["lastUsed"] = 0
+            save_servers(servers)
+            print(json.dumps(servers[i], ensure_ascii=False))
+            return 0
+    print("FAIL: not found", file=sys.stderr)
+    return 1
+
+def cmd_touch(sid):
+    import time
+    servers = load_servers()
+    for i, s in enumerate(servers):
+        if s.get("id") == sid:
+            servers[i]["lastUsed"] = int(time.time() * 1000)
+            if "favorite" not in servers[i]:
+                servers[i]["favorite"] = False
+            save_servers(servers)
+            print(json.dumps(servers[i], ensure_ascii=False))
             return 0
     print("FAIL: not found", file=sys.stderr)
     return 1
@@ -218,9 +264,11 @@ Commands:
   delete <id>          Delete server
   groups               List groups with counts
   stats                Stats: total/windows/linux/other
+  favorite <id> <0|1>  Toggle favorite
+  touch <id>           Update lastUsed to now (for Recent)
   help
 Expected JSON for add/update:
-  { name, host, protocol(RDP|SSH|VNC|SPICE), port, username, domain, group, notes }
+  { name, host, protocol(RDP|SSH|VNC|SPICE), port, username, domain, group, notes, favorite, lastUsed }
 """, file=sys.stderr)
 
 if __name__ == "__main__":
@@ -242,6 +290,11 @@ if __name__ == "__main__":
         sys.exit(cmd_groups())
     elif cmd == "stats":
         sys.exit(cmd_stats())
+    elif cmd == "favorite" and len(sys.argv) == 4:
+        v = sys.argv[3].lower() in ("1","true","yes","on")
+        sys.exit(cmd_favorite(sys.argv[2], v))
+    elif cmd == "touch" and len(sys.argv) == 3:
+        sys.exit(cmd_touch(sys.argv[2]))
     elif cmd in ("help", "--help", "-h"):
         usage()
         sys.exit(0)

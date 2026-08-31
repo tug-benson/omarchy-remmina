@@ -198,6 +198,24 @@ def main():
     if any(c in host for c in ";&|`$(){}[]!#\"'"):
         print("FAIL: invalid host", file=sys.stderr)
         sys.exit(1)
+    # Update lastUsed for Recent (fire-and-forget)
+    try:
+        import time
+        servers = load_servers()
+        for s in servers:
+            if s.get("id") == sid:
+                s["lastUsed"] = int(time.time() * 1000)
+                # ensure favorite field exists
+                if "favorite" not in s:
+                    s["favorite"] = False
+                Path(STORE_FILE).parent.mkdir(parents=True, exist_ok=True)
+                tmp = STORE_FILE.with_suffix(".tmp")
+                tmp.write_text(json.dumps(servers, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                tmp.chmod(0o600)
+                tmp.replace(STORE_FILE)
+                break
+    except Exception:
+        pass
     sys.exit(launch(srv.get("protocol", "RDP"), host, srv.get("port", ""), srv.get("username", ""), srv.get("domain", "")))
 
 if __name__ == "__main__":

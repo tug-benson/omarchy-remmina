@@ -492,6 +492,16 @@ Panel {
                                                 // actions stacked right
                                                 RowLayout {
                                                     spacing: Style.space(2)
+                                                    // Favorite star
+                                                    Button {
+                                                        iconText: modelData.favorite === true ? "" : ""
+                                                        fontFamily: "JetBrainsMono Nerd Font"
+                                                        fontSize: capSize
+                                                        tooltipText: modelData.favorite === true ? "Remove from favorites" : "Add to favorites"
+                                                        Layout.preferredWidth: Style.space(26)
+                                                        Layout.preferredHeight: Style.space(26)
+                                                        onClicked: if(service) service.toggleFavorite(modelData.id)
+                                                    }
                                                     // Launch
                                                     Button {
                                                         iconText: modelData.protocol==="SSH" ? "" : modelData.protocol==="RDP" ? "" : modelData.protocol==="VNC" ? "󰢹" : "󰹑"
