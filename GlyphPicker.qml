@@ -192,7 +192,7 @@ Item {
         RowLayout {
             Layout.fillWidth: true
             spacing: Style.space(6)
-            Label {
+            Text {
                 Layout.fillWidth: true
                 textFormat: Text.PlainText
                 text: root.filtered.length + " glyphs"

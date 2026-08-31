@@ -178,8 +178,6 @@ Item {
         }
     }
     function refreshGroups(){ groupsProc.running=true }
-    Component.onCompleted: { refresh(); trayFixProc.running=true; Qt.callLater(refreshGroups) }
-    onServersChanged: Qt.callLater(recalcStats)
 
     // ── CRUD ──
     Process { id: addProc; stdout: StdioCollector {waitForEnd:true}

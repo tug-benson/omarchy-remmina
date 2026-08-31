@@ -590,14 +590,10 @@ Panel {
                                                 id: dragArea
                                                 anchors.fill: parent
                                                 hoverEnabled: true
-                                                property bool containsMouse: hovered
-                                                // Use a small handle on the left for drag to avoid stealing button clicks
-                                                // Full row drag, but buttons keep their own MouseAreas with higher z
                                                 drag.target: rowDel
                                                 drag.axis: Drag.XAndYAxis
                                                 onPressed: dragArea.drag.active = true
                                                 onReleased: dragArea.drag.active = false
-                                                // Prevent stealing clicks from buttons (they have higher z)
                                                 propagateComposedEvents: true
                                                 onClicked: function(mouse) { mouse.accepted = false }
                                             }
@@ -839,7 +835,6 @@ Panel {
                                             id: dragAreaCustom
                                             anchors.fill: parent
                                             hoverEnabled: true
-                                            property bool containsMouse: hovered
                                             drag.target: rowDelCustom
                                             onPressed: dragAreaCustom.drag.active = true
                                             onReleased: dragAreaCustom.drag.active = false
@@ -937,7 +932,6 @@ Panel {
                                             id: dragAreaDefault
                                             anchors.fill: parent
                                             hoverEnabled: true
-                                            property bool containsMouse: hovered
                                             drag.target: rowDelDefault
                                             onPressed: dragAreaDefault.drag.active = true
                                             onReleased: dragAreaDefault.drag.active = false
