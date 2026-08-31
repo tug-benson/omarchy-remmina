@@ -1,0 +1,315 @@
+#!/usr/bin/env python3
+"""
+omarchy-remmina-import — import servers from CSV/TXT, SSH config, or Remmina files
+Usage:
+  omarchy-remmina-import csv <path.csv>       # CSV with header: name,host,protocol,port,username,group,notes
+  omarchy-remmina-import txt <path.txt>       # TXT lines: name;host;protocol;port;username;group
+  omarchy-remmina-import ssh                  # imports from ~/.ssh/config (Host entries)
+  omarchy-remmina-import remmina              # imports from ~/.local/share/remmina/*.remmina
+  omarchy-remmina-import csv-stdin            # read CSV from stdin
+Returns JSON { imported: n, skipped: n, errors: [...] }
+"""
+
+import csv
+import json
+import os
+import re
+import sys
+import uuid
+import configparser
+from pathlib import Path
+
+HOME = Path(os.environ.get("HOME", str(Path.home())))
+STORE_FILE = HOME / ".config" / "remmina-panel" / "servers.json"
+
+def load_servers():
+    if not STORE_FILE.exists():
+        return []
+    try:
+        data = json.loads(STORE_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except:
+        return []
+
+def save_servers(servers):
+    STORE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = STORE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(servers, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.chmod(0o600)
+    tmp.replace(STORE_FILE)
+
+def sanitize_name(s): return re.sub(r'[\x00-\x1f\x7f]', '', str(s).strip())[:64] if s else ""
+def sanitize_host(s): return re.sub(r'[\x00-\x1f\x7f]', '', str(s).strip())[:253] if s else ""
+def normalize_protocol(p):
+    if not p: return "RDP"
+    u = str(p).strip().upper()
+    if u in {"RDP","SSH","VNC","SPICE","SFTP","HTTP","HTTPS","CUSTOM"}:
+        return u
+    m = {"RDP":"RDP","SSH":"SSH","VNC":"VNC","SPICE":"SPICE","SFTP":"SSH"}
+    return m.get(u, "CUSTOM")
+
+def existing_keys(servers):
+    return {(s.get("name","").lower(), s.get("host","").lower()) for s in servers}
+
+def import_records(records):
+    servers = load_servers()
+    keys = existing_keys(servers)
+    imported = 0
+    skipped = 0
+    errors = []
+    for rec in records:
+        name = sanitize_name(rec.get("name"))
+        host = sanitize_host(rec.get("host"))
+        if not name or not host:
+            errors.append(f"skip invalid name/host: {rec}")
+            skipped += 1
+            continue
+        key = (name.lower(), host.lower())
+        if key in keys:
+            skipped += 1
+            continue
+        protocol = normalize_protocol(rec.get("protocol"))
+        port = str(rec.get("port","")).strip()
+        if port and not port.isdigit():
+            errors.append(f"invalid port for {name}: {port}")
+            port = ""
+        if port and not (1 <= int(port) <= 65535):
+            errors.append(f"port out of range for {name}: {port}")
+            port = ""
+        username = sanitize_name(rec.get("username"))[:64]
+        group = sanitize_name(rec.get("group")) or "General"
+        notes = re.sub(r'[\x00-\x1f\x7f]','', str(rec.get("notes","")).strip())[:256]
+        srv = {
+            "id": str(uuid.uuid4()),
+            "name": name,
+            "host": host,
+            "protocol": protocol,
+            "port": port,
+            "username": username,
+            "group": group,
+            "notes": notes
+        }
+        servers.append(srv)
+        keys.add(key)
+        imported += 1
+    if imported:
+        save_servers(servers)
+    return {"imported": imported, "skipped": skipped, "errors": errors}
+
+def import_csv_file(path):
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="ignore")
+    except Exception as e:
+        print(json.dumps({"imported":0,"skipped":0,"errors":[str(e)]}))
+        return 1
+    # Detect delimiter
+    try:
+        reader = csv.DictReader(text.splitlines())
+        if reader.fieldnames is None:
+            print(json.dumps({"imported":0,"skipped":0,"errors":["empty or no header"]}))
+            return 1
+        # normalize fieldnames lower
+        records = []
+        for row in reader:
+            # normalize keys
+            norm = { (k or "").strip().lower(): (v or "").strip() for k,v in row.items() }
+            records.append({
+                "name": norm.get("name") or norm.get("nom") or "",
+                "host": norm.get("host") or norm.get("ip") or norm.get("server") or norm.get("hostname") or "",
+                "protocol": norm.get("protocol") or norm.get("proto") or norm.get("type") or "",
+                "port": norm.get("port") or "",
+                "username": norm.get("username") or norm.get("user") or norm.get("login") or "",
+                "group": norm.get("group") or norm.get("groupe") or "",
+                "notes": norm.get("notes") or norm.get("note") or norm.get("comment") or ""
+            })
+        result = import_records(records)
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+    except Exception as e:
+        print(json.dumps({"imported":0,"skipped":0,"errors":[str(e)]}))
+        return 1
+
+def import_csv_stdin():
+    text = sys.stdin.read()
+    # write temp
+    try:
+        reader = csv.DictReader(text.splitlines())
+        if reader.fieldnames is None:
+            print(json.dumps({"imported":0,"skipped":0,"errors":["empty"]}))
+            return 1
+        records = []
+        for row in reader:
+            norm = { (k or "").strip().lower(): (v or "").strip() for k,v in row.items() }
+            records.append({
+                "name": norm.get("name") or "",
+                "host": norm.get("host") or norm.get("ip") or norm.get("server") or "",
+                "protocol": norm.get("protocol") or "",
+                "port": norm.get("port") or "",
+                "username": norm.get("username") or norm.get("user") or "",
+                "group": norm.get("group") or "",
+                "notes": norm.get("notes") or ""
+            })
+        result = import_records(records)
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+    except Exception as e:
+        print(json.dumps({"imported":0,"skipped":0,"errors":[str(e)]}))
+        return 1
+
+def import_txt_file(path):
+    try:
+        lines = Path(path).read_text(encoding="utf-8", errors="ignore").splitlines()
+    except Exception as e:
+        print(json.dumps({"imported":0,"skipped":0,"errors":[str(e)]}))
+        return 1
+    records = []
+    for line in lines:
+        line=line.strip()
+        if not line or line.startswith("#"):
+            continue
+        # split by ; or , or \t
+        parts = re.split(r'[;\t,|]', line)
+        parts = [p.strip() for p in parts]
+        # Expected: name,host,protocol,port,username,group
+        rec = {
+            "name": parts[0] if len(parts)>0 else "",
+            "host": parts[1] if len(parts)>1 else "",
+            "protocol": parts[2] if len(parts)>2 else "",
+            "port": parts[3] if len(parts)>3 else "",
+            "username": parts[4] if len(parts)>4 else "",
+            "group": parts[5] if len(parts)>5 else "",
+            "notes": parts[6] if len(parts)>6 else ""
+        }
+        records.append(rec)
+    result = import_records(records)
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+def import_ssh():
+    cfg = HOME / ".ssh" / "config"
+    if not cfg.exists():
+        print(json.dumps({"imported":0,"skipped":0,"errors":["~/.ssh/config not found"]}))
+        return 0
+    text = cfg.read_text(encoding="utf-8", errors="ignore")
+    records = []
+    current = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        # Host line
+        m = re.match(r'^\s*Host\s+(.+)$', line, re.IGNORECASE)
+        if m:
+            hosts = m.group(1).strip().split()
+            # skip wildcards
+            hosts = [h for h in hosts if "*" not in h and "?" not in h and "!" not in h]
+            if not hosts:
+                current = None
+                continue
+            # We'll create entry per Host alias (first alias as name, HostName as host if present)
+            for h in hosts:
+                current = {"name": h, "host": h, "protocol": "SSH", "port": "", "username": "", "group": "Linux", "notes": "imported from ~/.ssh/config"}
+                records.append(current)
+            continue
+        if current is None:
+            continue
+        # HostName
+        m2 = re.match(r'^\s*HostName\s+(.+)$', line, re.IGNORECASE)
+        if m2:
+            current["host"] = m2.group(1).strip()
+            continue
+        m3 = re.match(r'^\s*User\s+(.+)$', line, re.IGNORECASE)
+        if m3:
+            current["username"] = m3.group(1).strip()
+            continue
+        m4 = re.match(r'^\s*Port\s+(.+)$', line, re.IGNORECASE)
+        if m4:
+            current["port"] = m4.group(1).strip()
+            continue
+    # deduplicate records by name
+    seen=set()
+    dedup=[]
+    for r in records:
+        if r["name"] not in seen:
+            seen.add(r["name"])
+            dedup.append(r)
+    result = import_records(dedup)
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+def import_remmina():
+    rem_dir = HOME / ".local" / "share" / "remmina"
+    if not rem_dir.exists():
+        print(json.dumps({"imported":0,"skipped":0,"errors":[f"{rem_dir} not found"]}))
+        return 0
+    files = list(rem_dir.glob("*.remmina"))
+    if not files:
+        print(json.dumps({"imported":0,"skipped":0,"errors":["no .remmina files"]}))
+        return 0
+    records=[]
+    for f in files:
+        try:
+            cp = configparser.ConfigParser()
+            # remmina files may have no section? Actually [remmina]
+            cp.read(f, encoding="utf-8")
+            if "remmina" not in cp:
+                continue
+            sec = cp["remmina"]
+            name = sec.get("name", f.stem)
+            server = sec.get("server", "")
+            protocol = sec.get("protocol", "RDP")
+            # server may contain :port
+            host = server
+            port = ""
+            if ":" in server:
+                # handle ipv6? simple
+                if server.count(":") == 1:
+                    h,p = server.rsplit(":",1)
+                    if p.isdigit():
+                        host = h
+                        port = p
+            username = sec.get("username", "")
+            group = sec.get("group", "")
+            if not group:
+                # infer group from protocol
+                group = "Windows" if protocol.upper()=="RDP" else "Linux" if protocol.upper() in ("SSH","VNC","SPICE") else "General"
+            # remmina group may be empty; use inferred
+            notes = ""
+            records.append({
+                "name": name,
+                "host": host,
+                "protocol": protocol,
+                "port": port,
+                "username": username,
+                "group": group,
+                "notes": notes
+            })
+        except Exception as e:
+            continue
+    result = import_records(records)
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+def usage():
+    print("Usage: omarchy-remmina-import <csv|txt|ssh|remmina|csv-stdin> [path]", file=sys.stderr)
+    print("CSV header expected: name,host,protocol,port,username,group,notes", file=sys.stderr)
+    print("TXT line: name;host;protocol;port;username;group", file=sys.stderr)
+
+if __name__=="__main__":
+    if len(sys.argv)<2:
+        usage()
+        sys.exit(1)
+    cmd=sys.argv[1]
+    if cmd=="csv" and len(sys.argv)==3:
+        sys.exit(import_csv_file(sys.argv[2]))
+    elif cmd=="txt" and len(sys.argv)==3:
+        sys.exit(import_txt_file(sys.argv[2]))
+    elif cmd=="ssh":
+        sys.exit(import_ssh())
+    elif cmd=="remmina":
+        sys.exit(import_remmina())
+    elif cmd=="csv-stdin":
+        sys.exit(import_csv_stdin())
+    else:
+        usage()
+        sys.exit(1)

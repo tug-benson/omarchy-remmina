@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""
+omarchy-remmina-launch — launch a remote connection
+Usage: omarchy-remmina-launch <id>
+       omarchy-remmina-launch --direct <protocol> <host> <port> <username>
+
+For SSH/SFTP: uses xdg-terminal-exec -> ssh
+For RDP: tries xfreerdp, else remmina -c rdp://...
+For VNC: remmina -c vnc://...
+For SPICE: remote-viewer spice://...
+Disables Remmina tray icon side-effect via remmina.pref patch.
+
+No passwords handled — SSH uses ssh config / keys, RDP uses freerdp/remmina dialog.
+"""
+
+import json
+import os
+import sys
+import subprocess
+import shlex
+from pathlib import Path
+
+HOME = Path(os.environ.get("HOME", str(Path.home())))
+STORE_FILE = HOME / ".config" / "remmina-panel" / "servers.json"
+
+def load_servers():
+    if not STORE_FILE.exists():
+        return []
+    try:
+        return json.loads(STORE_FILE.read_text(encoding="utf-8"))
+    except:
+        return []
+
+def find_server(sid):
+    for s in load_servers():
+        if s.get("id") == sid:
+            return s
+    return None
+
+def disable_remmina_tray():
+    """Ensure Remmina tray icon is disabled (it breaks on Wayland/Hyprland)."""
+    pref = HOME / ".config" / "remmina" / "remmina.pref"
+    try:
+        if not pref.exists():
+            return
+        txt = pref.read_text(encoding="utf-8", errors="ignore")
+        if "disable_tray_icon=true" in txt:
+            return
+        # patch in place
+        if "disable_tray_icon=" in txt:
+            txt = txt.replace("disable_tray_icon=false", "disable_tray_icon=true")
+        else:
+            txt = txt.rstrip() + "\n" + "disable_tray_icon=true\n"
+        pref.write_text(txt, encoding="utf-8")
+    except Exception:
+        pass
+
+def which(cmd):
+    import shutil
+    return shutil.which(cmd)
+
+def launch_ssh(host, port, username):
+    target = f"{username}@{host}" if username else host
+    ssh_cmd = ["ssh", target]
+    if port:
+        ssh_cmd += ["-p", str(port)]
+    # Use xdg-terminal-exec so we honor Omarchy's default terminal (Alacritty/Foot/Ghostty/Kitty)
+    if which("xdg-terminal-exec"):
+        # xdg-terminal-exec -- ssh ...
+        # needs -- separator
+        cmd = ["xdg-terminal-exec", "--"] + ssh_cmd
+    else:
+        # fallback: try common terminals
+        for term in [which("ghostty"), which("alacritty"), which("kitty"), which("foot")]:
+            if term:
+                if "kitty" in term:
+                    cmd = [term, "-e"] + ssh_cmd
+                elif "foot" in term:
+                    cmd = [term, "-e"] + ssh_cmd
+                elif "ghostty" in term:
+                    cmd = [term, "-e"] + ssh_cmd
+                else:
+                    cmd = [term, "-e"] + ssh_cmd
+                break
+        else:
+            cmd = ssh_cmd
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    return 0
+
+def launch_rdp(host, port, username):
+    disable_remmina_tray()
+    # sanitize  — no injection: host is validated alnum._- ; port digits; username alnum.
+    # Prefer xfreerdp if installed
+    if which("xfreerdp") or which("xfreerdp3"):
+        bin_name = "xfreerdp3" if which("xfreerdp3") else "xfreerdp"
+        # Build freerdp args
+        v = f"{host}:{port}" if port else host
+        args = [bin_name, f"/v:{v}"]
+        if username:
+            # split domain\user if present
+            if "\\" in username or "/" in username:
+                # let freerdp handle domain
+                args.append(f"/u:{username}")
+            else:
+                args.append(f"/u:{username}")
+            # Add domain if stored as domain in username? Already covered
+        # dynamic resolution, clipboard
+        args += ["/dynamic-resolution", "+clipboard", "/cert:ignore"]
+        subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        return 0
+    # fallback: remmina URI
+    # remmina -c rdp://[username@]host[:port]
+    user_part = ""
+    if username:
+        # escape @ and : in username? Keep simple: urlencode not needed for remmina but avoid @ break
+        safe_user = username.replace("@", "%40").replace(":", "%3A").replace("/", "%2F")
+        user_part = safe_user + "@"
+    port_part = f":{port}" if port else ""
+    uri = f"rdp://{user_part}{host}{port_part}"
+    cmd = ["remmina", "-c", uri]
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    return 0
+
+def launch_vnc(host, port, username):
+    disable_remmina_tray()
+    # Try remmina VNC
+    # remmina expects vnc://host[:port] or vnc://server?VncUsername=...
+    port_part = f":{port}" if port else ""
+    if username:
+        uri = f"vnc://{host}{port_part}?VncUsername={username}"
+    else:
+        uri = f"vnc://{host}{port_part}"
+    # If remote-viewer / vncviewer available? Remmina is canonical
+    if which("remmina"):
+        cmd = ["remmina", "-c", uri]
+    elif which("vncviewer"):
+        v = f"{host}:{port}" if port else host
+        cmd = ["vncviewer", v]
+    elif which("virt-viewer"):
+        cmd = ["virt-viewer", uri]
+    else:
+        # fallback to remmina anyway
+        cmd = ["remmina", "-c", uri]
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    return 0
+
+def launch_spice(host, port, username):
+    # SPICE via remote-viewer (virt-viewer)
+    spice_port = port or "5900"
+    uri = f"spice://{host}:{spice_port}"
+    viewer = which("remote-viewer") or which("virt-viewer")
+    if viewer:
+        cmd = [viewer, uri]
+    else:
+        # fallback remmina
+        cmd = ["remmina", "-c", uri]
+    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    return 0
+
+def launch(protocol, host, port, username):
+    p = (protocol or "RDP").upper()
+    if p == "SSH" or p == "SFTP":
+        return launch_ssh(host, port, username)
+    elif p == "RDP":
+        return launch_rdp(host, port, username)
+    elif p == "VNC":
+        return launch_vnc(host, port, username)
+    elif p == "SPICE":
+        return launch_spice(host, port, username)
+    else:
+        # generic: try remmina with protocol lower
+        disable_remmina_tray()
+        proto = p.lower()
+        uri = f"{proto}://{host}"
+        if port:
+            uri += f":{port}"
+        subprocess.Popen(["remmina", "-c", uri], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        return 0
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: omarchy-remmina-launch <server-id>", file=sys.stderr)
+        print("       omarchy-remmina-launch --direct <PROTO> <host> <port> <username>", file=sys.stderr)
+        sys.exit(1)
+    if sys.argv[1] == "--direct":
+        if len(sys.argv) < 6:
+            print("FAIL: --direct needs proto host port username", file=sys.stderr)
+            sys.exit(1)
+        proto, host, port, username = sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+        port = port if port and port != "-" else ""
+        username = username if username and username != "-" else ""
+        sys.exit(launch(proto, host, port, username))
+    sid = sys.argv[1]
+    srv = find_server(sid)
+    if not srv:
+        print(f"FAIL: server {sid} not found", file=sys.stderr)
+        sys.exit(1)
+    host = srv.get("host", "")
+    if not host:
+        print("FAIL: host empty", file=sys.stderr)
+        sys.exit(1)
+    # safety: reject suspicious host containing shell meta
+    if any(c in host for c in ";&|`$(){}[]!#\"'"):
+        print("FAIL: invalid host", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(launch(srv.get("protocol", "RDP"), host, srv.get("port", ""), srv.get("username", "")))
+
+if __name__ == "__main__":
+    main()

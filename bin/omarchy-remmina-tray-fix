@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# omarchy-remmina-tray-fix — disable Remmina tray icon (broken on Omarchy/Hyprland)
+# Idempotent; patches ~/.config/remmina/remmina.pref
+
+set -euo pipefail
+PREF="$HOME/.config/remmina/remmina.pref"
+if [[ ! -f "$PREF" ]]; then
+  echo "no pref file at $PREF — Remmina never launched, nothing to do"
+  exit 0
+fi
+if grep -q "^disable_tray_icon=true" "$PREF"; then
+  echo "already disabled"
+  exit 0
+fi
+if grep -q "^disable_tray_icon=" "$PREF"; then
+  sed -i 's/^disable_tray_icon=.*/disable_tray_icon=true/' "$PREF"
+else
+  echo "disable_tray_icon=true" >> "$PREF"
+fi
+echo "Remmina tray icon disabled"

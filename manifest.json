@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.tug-benson.remmina",
+  "name": "Remmina Hub",
+  "version": "1.0.0",
+  "description": "Remmina remote hub for Omarchy — manage RDP, SSH, VNC & SPICE servers, group, search, import CSV/SSH config/Remmina files, launch via freerdp/virt-viewer or default terminal, with Remmina tray icon disabled.",
+  "author": "tug-benson",
+  "license": "MIT",
+  "repository": "https://github.com/tug-benson/omarchy-remmina",
+  "homepage": "https://github.com/tug-benson/omarchy-remmina",
+  "kinds": ["service", "bar-widget"],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Remmina Hub",
+    "description": "Remote servers hub — RDP, SSH, VNC, SPICE",
+    "category": "Network",
+    "aliases": ["remmina", "rdp", "ssh", "vnc", "spice", "remote", "servers"],
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

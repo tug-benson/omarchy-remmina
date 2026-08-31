@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+"""
+omarchy-remmina-servers — CRUD for servers.json
+Storage: $HOME/.config/remmina-panel/servers.json
+Schema: { id, name, host, protocol, port, username, group, notes }
+Protocols: RDP, SSH, VNC, SPICE, SFTP, CUSTOM
+Groups: free-form (e.g. Windows, Linux, Infra, Prod)
+No secrets stored — no passwords.
+"""
+
+import json
+import os
+import sys
+import re
+import uuid
+from pathlib import Path
+
+HOME = Path(os.environ.get("HOME", str(Path.home())))
+STORE_DIR = HOME / ".config" / "remmina-panel"
+STORE_FILE = STORE_DIR / "servers.json"
+
+VALID_PROTOCOLS = {"RDP", "SSH", "VNC", "SPICE", "SFTP", "HTTP", "HTTPS", "CUSTOM"}
+# Normalize input to upper
+def normalize_protocol(p):
+    if not p:
+        return "RDP"
+    u = str(p).strip().upper()
+    if u in VALID_PROTOCOLS:
+        return u
+    # map common aliases
+    alias = {
+        "RDP": "RDP", "SSH": "SSH", "VNC": "VNC", "SPICE": "SPICE",
+        "SFTP": "SSH", "FTP": "CUSTOM", "TELNET": "CUSTOM",
+        "WWW": "HTTPS", "WEB": "HTTPS"
+    }
+    return alias.get(u, "CUSTOM")
+
+def load_servers():
+    if not STORE_FILE.exists():
+        return []
+    try:
+        data = json.loads(STORE_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict) and "servers" in data:
+            return data["servers"]
+        return []
+    except Exception:
+        return []
+
+def save_servers(servers):
+    STORE_DIR.mkdir(parents=True, exist_ok=True)
+    # atomic write
+    tmp = STORE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(servers, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.chmod(0o600)
+    tmp.replace(STORE_FILE)
+
+def sanitize(s, max_len=128):
+    if s is None:
+        return ""
+    s = str(s).strip()
+    # remove control chars
+    s = re.sub(r'[\x00-\x1f\x7f]', '', s)
+    return s[:max_len]
+
+def validate_server(obj, is_update=False):
+    name = sanitize(obj.get("name"), 64)
+    host = sanitize(obj.get("host"), 253)
+    if not name:
+        return None, "name is required"
+    if not host:
+        return None, "host is required"
+    # basic host validation — allow hostname, ip, domain
+    if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9._\-]*$', host):
+        # allow ipv6 bracket?
+        if not re.match(r'^[\[a-fA-F0-9:\]]+$', host) and not re.match(r'^[a-zA-Z0-9.\-_:]+$', host):
+            return None, "invalid host"
+    protocol = normalize_protocol(obj.get("protocol"))
+    port_raw = obj.get("port")
+    port = ""
+    if port_raw not in (None, "", 0):
+        try:
+            p = int(str(port_raw).strip())
+            if 1 <= p <= 65535:
+                port = str(p)
+            else:
+                return None, "port out of range 1-65535"
+        except:
+            return None, "invalid port"
+    username = sanitize(obj.get("username"), 64)
+    group = sanitize(obj.get("group"), 64) or "General"
+    notes = sanitize(obj.get("notes"), 256)
+
+    server = {
+        "id": sanitize(obj.get("id"), 64) or str(uuid.uuid4()),
+        "name": name,
+        "host": host,
+        "protocol": protocol,
+        "port": port,
+        "username": username,
+        "group": group,
+        "notes": notes
+    }
+    return server, None
+
+def cmd_list():
+    servers = load_servers()
+    print(json.dumps(servers, ensure_ascii=False))
+    return 0
+
+def cmd_get(sid):
+    servers = load_servers()
+    for s in servers:
+        if s.get("id") == sid:
+            print(json.dumps(s, ensure_ascii=False))
+            return 0
+    print(json.dumps({"error": "not found"}))
+    return 1
+
+def cmd_add():
+    raw = sys.stdin.read()
+    if not raw.strip():
+        print("FAIL: empty stdin", file=sys.stderr)
+        return 1
+    try:
+        obj = json.loads(raw)
+    except Exception as e:
+        print(f"FAIL: invalid json: {e}", file=sys.stderr)
+        return 1
+    server, err = validate_server(obj)
+    if err:
+        print(f"FAIL: {err}", file=sys.stderr)
+        return 1
+    servers = load_servers()
+    # ensure id unique
+    if any(s.get("id") == server["id"] for s in servers):
+        server["id"] = str(uuid.uuid4())
+    # name uniqueness? allow duplicate but warn
+    servers.append(server)
+    save_servers(servers)
+    print(json.dumps(server, ensure_ascii=False))
+    return 0
+
+def cmd_update(sid):
+    raw = sys.stdin.read()
+    try:
+        obj = json.loads(raw) if raw.strip() else {}
+    except Exception as e:
+        print(f"FAIL: invalid json: {e}", file=sys.stderr)
+        return 1
+    obj["id"] = sid
+    server, err = validate_server(obj)
+    if err:
+        print(f"FAIL: {err}", file=sys.stderr)
+        return 1
+    servers = load_servers()
+    for i, s in enumerate(servers):
+        if s.get("id") == sid:
+            servers[i] = server
+            save_servers(servers)
+            print(json.dumps(server, ensure_ascii=False))
+            return 0
+    print("FAIL: not found", file=sys.stderr)
+    return 1
+
+def cmd_delete(sid):
+    servers = load_servers()
+    new = [s for s in servers if s.get("id") != sid]
+    if len(new) == len(servers):
+        print("FAIL: not found", file=sys.stderr)
+        return 1
+    save_servers(new)
+    print("OK")
+    return 0
+
+def cmd_groups():
+    servers = load_servers()
+    groups = {}
+    for s in servers:
+        g = s.get("group") or "General"
+        groups[g] = groups.get(g, 0) + 1
+    # return sorted
+    out = [{"group": k, "count": v} for k, v in sorted(groups.items())]
+    print(json.dumps(out, ensure_ascii=False))
+    return 0
+
+def cmd_stats():
+    servers = load_servers()
+    total = len(servers)
+    # classify: RDP -> windows, SSH/VNC/SPICE -> linux, rest other
+    windows = sum(1 for s in servers if s.get("protocol") == "RDP")
+    linux = sum(1 for s in servers if s.get("protocol") in ("SSH", "VNC", "SPICE", "SFTP"))
+    other = total - windows - linux
+    groups = {}
+    for s in servers:
+        g = s.get("group") or "General"
+        groups[g] = groups.get(g, 0) + 1
+    print(json.dumps({
+        "total": total,
+        "windows": windows,
+        "linux": linux,
+        "other": other,
+        "groups": groups
+    }, ensure_ascii=False))
+    return 0
+
+def usage():
+    print("""Usage: omarchy-remmina-servers <command>
+
+Commands:
+  list                 List all servers (JSON array to stdout)
+  get <id>             Get single server
+  add                  Add server (read JSON from stdin)
+  update <id>          Update server (read JSON from stdin)
+  delete <id>          Delete server
+  groups               List groups with counts
+  stats                Stats: total/windows/linux/other
+  help
+Expected JSON for add/update:
+  { name, host, protocol(RDP|SSH|VNC|SPICE), port, username, group, notes }
+""", file=sys.stderr)
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        usage()
+        sys.exit(1)
+    cmd = sys.argv[1]
+    if cmd == "list":
+        sys.exit(cmd_list())
+    elif cmd == "get" and len(sys.argv) == 3:
+        sys.exit(cmd_get(sys.argv[2]))
+    elif cmd == "add":
+        sys.exit(cmd_add())
+    elif cmd == "update" and len(sys.argv) == 3:
+        sys.exit(cmd_update(sys.argv[2]))
+    elif cmd == "delete" and len(sys.argv) == 3:
+        sys.exit(cmd_delete(sys.argv[2]))
+    elif cmd == "groups":
+        sys.exit(cmd_groups())
+    elif cmd == "stats":
+        sys.exit(cmd_stats())
+    elif cmd in ("help", "--help", "-h"):
+        usage()
+        sys.exit(0)
+    else:
+        usage()
+        sys.exit(1)
