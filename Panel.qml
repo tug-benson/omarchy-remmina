@@ -8,7 +8,7 @@ import qs.Commons
 import qs.Ui
 
 Panel {
-    id: remminaRoot
+    id: root
     moduleName: "Remmina Hub"
     manageIpc: false
 
@@ -98,10 +98,10 @@ Panel {
 
     KeyboardPanel {
         id: panel
-        anchorItem: remminaRoot.anchorItem
-        owner: remminaRoot.hostWidget || remminaRoot
-        bar: remminaRoot.bar
-        open: remminaRoot.opened
+        anchorItem: root.anchorItem
+        owner: root.hostWidget || remminaRoot
+        bar: root.bar
+        open: root.opened
         focusTarget: keyCatcher
         contentWidth: Style.space(380)
         contentHeight: panel.fittedContentHeight(flick.contentHeight + Style.space(20))
@@ -109,8 +109,8 @@ Panel {
         PanelKeyCatcher {
             id: keyCatcher
             anchors.fill: parent
-            onCloseRequested: remminaRoot.close()
-            onTabRequested: function(dir){ remminaRoot.switchPanel(dir) }
+            onCloseRequested: root.close()
+            onTabRequested: function(dir){ root.switchPanel(dir) }
 
             Flickable {
                 id: flick
@@ -133,7 +133,7 @@ Panel {
                             textFormat: Text.PlainText
                             text: "󰢹"
                             font.family: "JetBrainsMono Nerd Font"
-                            font.pixelSize: remminaRoot.titleSize + 6
+                            font.pixelSize: root.titleSize + 6
                             color: cAccent
                         }
                         ColumnLayout {
@@ -241,7 +241,7 @@ Panel {
                             text: "＋ Add Server"
                             fontSize: bodySize
                             Layout.fillWidth: true
-                            onClicked: remminaRoot.openAdd()
+                            onClicked: root.openAdd()
                         }
                         Button {
                             iconText: ""
@@ -329,38 +329,38 @@ Panel {
                             anchors.fill: parent
                             anchors.margins: Style.space(8)
                             spacing: Style.space(6)
-                            Label { textFormat: Text.PlainText; text: remminaRoot.editId ? "Edit Server" : "Add Server"; font.family: fontFam; font.pixelSize: bodySize; font.bold: true; color: cFg }
+                            Label { textFormat: Text.PlainText; text: root.editId ? "Edit Server" : "Add Server"; font.family: fontFam; font.pixelSize: bodySize; font.bold: true; color: cFg }
                             GridLayout {
                                 columns: 2
                                 columnSpacing: Style.space(6)
                                 rowSpacing: Style.space(4)
                                 Layout.fillWidth: true
                                 Label { textFormat: Text.PlainText; text: "Name *"; font.family: fontFam; font.pixelSize: capSize; color: cMuted }
-                                TextField { Layout.fillWidth: true; text: remminaRoot.formName; placeholderText: "srv-win-01"; font.pixelSize: capSize; onTextChanged: remminaRoot.formName=text }
+                                TextField { Layout.fillWidth: true; text: root.formName; placeholderText: "srv-win-01"; font.pixelSize: capSize; onTextChanged: root.formName=text }
                                 Label { textFormat: Text.PlainText; text: "Host *"; font.family: fontFam; font.pixelSize: capSize; color: cMuted }
-                                TextField { Layout.fillWidth: true; text: remminaRoot.formHost; placeholderText: "host.example.com"; font.pixelSize: capSize; onTextChanged: remminaRoot.formHost=text }
+                                TextField { Layout.fillWidth: true; text: root.formHost; placeholderText: "host.example.com"; font.pixelSize: capSize; onTextChanged: root.formHost=text }
                                 Label { textFormat: Text.PlainText; text: "Protocol"; font.family: fontFam; font.pixelSize: capSize; color: cMuted }
                                 Dropdown {
                                     Layout.fillWidth: true
                                     label: ""
                                     showLabel: false
-                                    value: remminaRoot.formProto
+                                    value: root.formProto
                                     options: ["RDP","SSH","VNC","SPICE"]
-                                    onChanged: function(v){ remminaRoot.formProto=v }
+                                    onChanged: function(v){ root.formProto=v }
                                 }
                                 Label { textFormat: Text.PlainText; text: "Port"; font.family: fontFam; font.pixelSize: capSize; color: cMuted }
-                                TextField { Layout.fillWidth: true; text: remminaRoot.formPort; placeholderText: "3389 / 22 / 5900"; font.pixelSize: capSize; inputMethodHints: Qt.ImhDigitsOnly; onTextChanged: remminaRoot.formPort=text }
+                                TextField { Layout.fillWidth: true; text: root.formPort; placeholderText: "3389 / 22 / 5900"; font.pixelSize: capSize; inputMethodHints: Qt.ImhDigitsOnly; onTextChanged: root.formPort=text }
                                 Label { textFormat: Text.PlainText; text: "Username"; font.family: fontFam; font.pixelSize: capSize; color: cMuted }
-                                TextField { Layout.fillWidth: true; text: remminaRoot.formUser; placeholderText: "admin"; font.pixelSize: capSize; onTextChanged: remminaRoot.formUser=text }
+                                TextField { Layout.fillWidth: true; text: root.formUser; placeholderText: "admin"; font.pixelSize: capSize; onTextChanged: root.formUser=text }
                                 Label { textFormat: Text.PlainText; text: "Group"; font.family: fontFam; font.pixelSize: capSize; color: cMuted }
-                                TextField { Layout.fillWidth: true; text: remminaRoot.formGroup; placeholderText: "Windows / Linux / Infra"; font.pixelSize: capSize; onTextChanged: remminaRoot.formGroup=text }
+                                TextField { Layout.fillWidth: true; text: root.formGroup; placeholderText: "Windows / Linux / Infra"; font.pixelSize: capSize; onTextChanged: root.formGroup=text }
                             }
-                            TextField { Layout.fillWidth: true; text: remminaRoot.formNotes; placeholderText: "Notes (optional)"; font.pixelSize: capSize; onTextChanged: remminaRoot.formNotes=text }
-                            Label { visible: remminaRoot.formError!==""; textFormat: Text.PlainText; text: remminaRoot.formError; font.family: fontFam; font.pixelSize: capSize; color: cUrgent }
+                            TextField { Layout.fillWidth: true; text: root.formNotes; placeholderText: "Notes (optional)"; font.pixelSize: capSize; onTextChanged: root.formNotes=text }
+                            Label { visible: root.formError!==""; textFormat: Text.PlainText; text: root.formError; font.family: fontFam; font.pixelSize: capSize; color: cUrgent }
                             RowLayout {
                                 Layout.fillWidth: true; spacing: Style.space(6)
-                                Button { text: "Cancel"; fontSize: capSize; Layout.fillWidth: true; onClicked: { if(service) service.showAddForm=false; remminaRoot.resetForm() } }
-                                Button { text: remminaRoot.editId ? "Update" : "Add"; fontSize: capSize; Layout.fillWidth: true; onClicked: remminaRoot.submitForm() }
+                                Button { text: "Cancel"; fontSize: capSize; Layout.fillWidth: true; onClicked: { if(service) service.showAddForm=false; root.resetForm() } }
+                                Button { text: root.editId ? "Update" : "Add"; fontSize: capSize; Layout.fillWidth: true; onClicked: root.submitForm() }
                             }
                         }
                     }
@@ -458,16 +458,16 @@ Panel {
                                                 // protocol glyph box
                                                 Rectangle {
                                                     width: Style.space(28); height: Style.space(28); radius: Style.space(4)
-                                                    color: Util.alpha(remminaRoot.protoColor(modelData.protocol), 0.14)
-                                                    border.color: Util.alpha(remminaRoot.protoColor(modelData.protocol), 0.35)
+                                                    color: Util.alpha(root.protoColor(modelData.protocol), 0.14)
+                                                    border.color: Util.alpha(root.protoColor(modelData.protocol), 0.35)
                                                     border.width: 1
                                                     Label {
                                                         anchors.centerIn: parent
                                                         textFormat: Text.PlainText
-                                                        text: remminaRoot.protoGlyph(modelData.protocol)
+                                                        text: root.protoGlyph(modelData.protocol)
                                                         font.family: "JetBrainsMono Nerd Font"
                                                         font.pixelSize: bodySize
-                                                        color: remminaRoot.protoColor(modelData.protocol)
+                                                        color: root.protoColor(modelData.protocol)
                                                     }
                                                 }
 
@@ -516,7 +516,7 @@ Panel {
                                                         tooltipText: "Edit"
                                                         Layout.preferredWidth: Style.space(26)
                                                         Layout.preferredHeight: Style.space(26)
-                                                        onClicked: remminaRoot.openEdit(modelData)
+                                                        onClicked: root.openEdit(modelData)
                                                     }
                                                     // Delete
                                                     Button {
@@ -527,9 +527,9 @@ Panel {
                                                         Layout.preferredWidth: Style.space(26)
                                                         Layout.preferredHeight: Style.space(26)
                                                         onClicked: {
-                                                            remminaRoot.confirmTargetId = modelData.id
-                                                            remminaRoot.confirmTargetName = modelData.name
-                                                            remminaRoot.confirmVisible = true
+                                                            root.confirmTargetId = modelData.id
+                                                            root.confirmTargetName = modelData.name
+                                                            root.confirmVisible = true
                                                         }
                                                     }
                                                 }
@@ -577,10 +577,10 @@ Panel {
 
             // ── Confirm delete overlay ──
             Rectangle {
-                anchors.fill: parent
-                visible: remminaRoot.confirmVisible
-                color: Util.alpha(remminaRoot.cBg, 0.75)
-                MouseArea { anchors.fill: parent; onClicked: remminaRoot.confirmVisible=false }
+                anchors.fill: keyCatcher
+                visible: confirmVisible
+                color: Util.alpha(root.cBg, 0.75)
+                MouseArea { anchors.fill: parent; onClicked: root.confirmVisible=false }
                 Rectangle {
                     anchors.centerIn: parent
                     width: Math.min(parent.width - Style.space(24), Style.space(300))
@@ -595,11 +595,11 @@ Panel {
                         anchors.margins: Style.space(12)
                         spacing: Style.space(8)
                         Label { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; textFormat: Text.PlainText; text: "Delete server?"; font.family: fontFam; font.pixelSize: bodySize; font.bold: true; color: cFg }
-                        Label { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; textFormat: Text.PlainText; text: remminaRoot.confirmTargetName; font.family: fontFam; font.pixelSize: capSize; color: cMuted }
+                        Label { Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; textFormat: Text.PlainText; text: root.confirmTargetName; font.family: fontFam; font.pixelSize: capSize; color: cMuted }
                         RowLayout {
                             spacing: Style.space(8)
-                            Button { text: "Cancel"; fontSize: capSize; Layout.fillWidth: true; onClicked: remminaRoot.confirmVisible=false }
-                            Button { text: "Delete"; fontSize: capSize; Layout.fillWidth: true; onClicked: { var id=remminaRoot.confirmTargetId; remminaRoot.confirmVisible=false; if(service) service.deleteServer(id) } }
+                            Button { text: "Cancel"; fontSize: capSize; Layout.fillWidth: true; onClicked: root.confirmVisible=false }
+                            Button { text: "Delete"; fontSize: capSize; Layout.fillWidth: true; onClicked: { var id=root.confirmTargetId; root.confirmVisible=false; if(service) service.deleteServer(id) } }
                         }
                     }
                 }
