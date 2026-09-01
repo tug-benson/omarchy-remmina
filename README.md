@@ -11,7 +11,7 @@ An [Omarchy](https://omarchy.org) plugin for the Quattro bar — manage **RDP, S
 - **Counters** — circular gauges: Windows (RDP), Linux (SSH/VNC/SPICE), Total.
 - **Search filter** — live filter on name / host / protocol / group / username / notes.
 - **Add / Edit / Delete** — `＋ Add Server` form (name*, host*, protocol, port, username, group, notes) + per-row edit/delete with confirmation.
-- **Launch stacked right** — per-row glyph: `` SSH → terminal, `` RDP → freerdp/remmina, `󰢹` VNC, `󰹑` SPICE. Uses `xdg-terminal-exec` for SSH so your Omarchy default terminal (Alacritty / Foot / Ghostty / Kitty) is honored.
+- **Launch stacked right** — SSH → terminal, RDP → freerdp/remmina, VNC, SPICE. Uses `xdg-terminal-exec` for SSH so your Omarchy default terminal (Alacritty / Foot / Ghostty / Kitty) is honored.
 - **Import**
   - **CSV** — header `name,host,protocol,port,username,group,notes` (e.g. `srv01,host.example.com,RDP,3389,admin,Windows,prod`). Via `zenity` file picker.
   - **TXT** — one per line `name;host;protocol;port;username;group` (`;` `,` `|` or tab).
@@ -61,19 +61,19 @@ omarchy pkg add openssh        # SSH
 
 ## Usage
 
-1. Click `󰢹` in the bar to open the hub.
+1. Click the Remmina Hub icon in the bar to open the hub.
 2. Use the search field to filter.
 3. `＋ Add Server` — fill `Name`, `Host` (IP or FQDN), `Protocol`, `Port`, `Username`, `Group`, then Add.
-4. Click the right-hand glyph on a row to connect:
+4. Click the connect button on a row to connect:
    - **SSH** → `xdg-terminal-exec -- ssh [user@]host [-p port]` (uses your SSH config / keys; configure `~/.ssh/config` first).
    - **RDP** → `xfreerdp /v:host:port /u:user /cert:ignore +clipboard` if `freerdp` present, otherwise `remmina -c rdp://user@host:port`.
    - **VNC** → `remmina -c vnc://host:port` (or `vncviewer`/`virt-viewer`).
    - **SPICE** → `remote-viewer spice://host:port` or `remmina -c spice://...`.
 5. Use the import buttons:
-   - `` — CSV/TXT file picker
-   - `` — import all `~/.local/share/remmina/*.remmina`
-   - `` — import `~/.ssh/config`
-6. Toggle groups collapsed/expanded via the header `` or the `Expand`/`Collapse` links.
+   - **CSV/TXT** — file picker
+   - **Remmina** — import all `~/.local/share/remmina/*.remmina`
+   - **SSH** — import `~/.ssh/config`
+6. Toggle groups collapsed/expanded via the header chevron or the `Expand`/`Collapse` links.
 
 ### CSV example (`servers.csv`)
 
@@ -122,6 +122,10 @@ omarchy-remmina/
 - No network calls — all data stays local.
 - No personal data is committed to the public repo (see `.gitignore`).
 - All `Process` invocations use `python3` vector args or `bash -lc` with single-quoted JSON via env var — no shell injection from server fields.
+
+## Acknowledgements
+
+Inspired by [j0achim/omarchy-bolt](https://github.com/j0achim/omarchy-bolt).
 
 ## License
 
