@@ -14,6 +14,13 @@ Panel {
 
     property var hostWidget: null
     property var anchorItem: null
+    readonly property var barIdentity: hostWidget || root
+
+    function switchPanel(direction) {
+        if (bar && typeof bar.switchPanelFrom === "function")
+            return bar.switchPanelFrom(barIdentity, direction)
+        return false
+    }
 
     readonly property var service: hostWidget && hostWidget.service
         ? hostWidget.service
@@ -42,6 +49,7 @@ Panel {
     property string newGroupGlyph: "󰉋"
     property bool glyphPickerVisible: false
     property string pickingGroup: ""
+    property string pendingGlyph: ""
     property string glyphFilter: ""
     property string editId: ""
     property string formName: ""
@@ -53,6 +61,8 @@ Panel {
     property string formGroup: ""
     property string formNotes: ""
     property string formError: ""
+
+    onOpenedChanged: if (opened && service) service.collapseAll()
 
     function resetForm() {
         editId=""; formName=""; formHost=""; formProto="RDP"; formPort=""; formUser=""; formDomain=""; formGroup=""; formNotes=""; formError=""
@@ -107,7 +117,7 @@ Panel {
     KeyboardPanel {
         id: panel
         anchorItem: root.anchorItem
-        owner: root.hostWidget || remminaRoot
+        owner: root.barIdentity
         bar: root.bar
         open: root.opened
         focusTarget: keyCatcher
@@ -175,6 +185,7 @@ Panel {
                     }
 
                     // ── Counters (ring gauges quadrant-style, centred) ──
+                    // gauges count only Windows+Linux (sum), not other custom groups
                     RowLayout {
                         Layout.fillWidth: true
                         Layout.alignment: Qt.AlignHCenter
@@ -190,7 +201,7 @@ Panel {
                             label: service ? String(service.windowsCount) : "0"
                             color: cAccent
                             trackColor: Util.alpha(cAccent, 0.12)
-                            fraction: service && service.totalCount > 0 ? service.windowsCount / service.totalCount : 0
+                            fraction: service && (service.windowsCount + service.linuxCount) > 0 ? service.windowsCount / (service.windowsCount + service.linuxCount) : 0
                         }
                         Gauge {
                             Layout.alignment: Qt.AlignHCenter
@@ -201,7 +212,7 @@ Panel {
                             label: service ? String(service.linuxCount) : "0"
                             color: cFg
                             trackColor: Util.alpha(cFg, 0.10)
-                            fraction: service && service.totalCount > 0 ? service.linuxCount / service.totalCount : 0
+                            fraction: service && (service.windowsCount + service.linuxCount) > 0 ? service.linuxCount / (service.windowsCount + service.linuxCount) : 0
                         }
                         Gauge {
                             Layout.alignment: Qt.AlignHCenter
@@ -209,10 +220,10 @@ Panel {
                             thickness: Style.space(7)
                             glyph: "󰢹"
                             glyphSize: Style.font.title + 4
-                            label: service ? String(service.totalCount) : "0"
+                            label: service ? String((service.windowsCount + service.linuxCount)) : "0"
                             color: cMuted
                             trackColor: Util.alpha(cMuted, 0.10)
-                            fraction: service && service.totalCount > 0 ? 1 : 0
+                            fraction: service && (service.windowsCount + service.linuxCount) > 0 ? 1 : 0
                         }
                     }
 
@@ -286,7 +297,7 @@ Panel {
                         spacing: Style.space(6)
                         TextField {
                             Layout.fillWidth: true
-                            placeholderText: "New group (e.g. Hyperviseur)"
+                            placeholderText: "New group (e.g. Hypervisor)"
                             text: root.newGroupName
                             font.family: fontFam
                             font.pixelSize: capSize
@@ -453,11 +464,24 @@ Panel {
                                             if (sid && service) service.moveServerToGroup(sid, grpDel.grpName)
                                         }
                                     }
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        z: 0
+                                        cursorShape: Qt.PointingHandCursor
+                                        propagateComposedEvents: true
+                                        onClicked: function(mouse) {
+                                            // Let child MouseAreas handle edit, otherwise toggle
+                                            if (mouse.button === Qt.LeftButton && root.editingGroup !== grpDel.grpName) {
+                                                if(service) service.toggleGroup(grpDel.grpName)
+                                            }
+                                        }
+                                    }
                                     RowLayout {
                                         anchors.fill: parent
                                         anchors.leftMargin: Style.space(8)
                                         anchors.rightMargin: Style.space(8)
                                         spacing: Style.space(6)
+                                        z: 1
                                         Label {
                                             textFormat: Text.PlainText
                                             text: grpDel.collapsed ? "" : ""
@@ -499,6 +523,7 @@ Panel {
                                             elide: Text.ElideRight
                                             MouseArea {
                                                 anchors.fill: parent
+                                                z: 2
                                                 cursorShape: Qt.PointingHandCursor
                                                 onClicked: if(service && !service.isVirtualGroup(grpDel.grpName)) {
                                                     root.editingGroup = grpDel.grpName
@@ -519,6 +544,7 @@ Panel {
                                             tooltipText: "Choose glyph"
                                             Layout.preferredWidth: Style.space(22)
                                             Layout.preferredHeight: Style.space(22)
+                                            z: 2
                                             onClicked: {
                                                 root.pickingGroup = grpDel.grpName
                                                 root.glyphPickerVisible = true
@@ -532,23 +558,13 @@ Panel {
                                             tooltipText: "Delete group"
                                             Layout.preferredWidth: Style.space(22)
                                             Layout.preferredHeight: Style.space(22)
+                                            z: 2
                                             onClicked: if(service) service.deleteGroup(grpDel.grpName)
                                         }
                                         Rectangle {
                                             width: Style.space(22); height: Style.space(16); radius: 8
                                             color: Util.alpha(cAccent,0.18)
                                             Label { anchors.centerIn: parent; textFormat: Text.PlainText; text: String(grpDel.grpCount); font.family: fontFam; font.pixelSize: capSize-1; color: cAccent }
-                                        }
-                                    }
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        cursorShape: Qt.PointingHandCursor
-                                        propagateComposedEvents: true
-                                        onClicked: function(mouse) {
-                                            // Let child MouseAreas handle edit, otherwise toggle
-                                            if (mouse.button === Qt.LeftButton && root.editingGroup !== grpDel.grpName) {
-                                                if(service) service.toggleGroup(grpDel.grpName)
-                                            }
                                         }
                                     }
                                 }
@@ -591,9 +607,8 @@ Panel {
                                             MouseArea {
                                                 id: dragArea
                                                 anchors.fill: parent
-                                                hoverEnabled: true                                                drag.target: rowDel
-                                                drag.axis: Drag.XAndYAxis
-                                                // drag handled via Drag.mimeData + drag.target
+                                                hoverEnabled: true
+                                                drag.target: rowDel
                                                 propagateComposedEvents: true
                                                 onClicked: function(mouse) { mouse.accepted = false }
                                             }
@@ -613,8 +628,8 @@ Panel {
                                                     opacity: 0.5
                                                     MouseArea {
                                                         anchors.fill: parent
-                                                        cursorShape: Qt.ClosedHandCursor                                                drag.target: rowDel
-                                                        // drag handle
+                                                        cursorShape: Qt.ClosedHandCursor
+                                                        drag.target: rowDel
                                                     }
                                                 }
                                                 // protocol glyph box
@@ -720,7 +735,7 @@ Panel {
                         visible: service ? service.groupCounts.filter(function(g){ return g.group==="Favorites" || g.group==="Recent" }).length>0 : false
                         color: Qt.rgba(1,1,1,0.08)
                     }
-                    // Custom groups (INFRA, Hyperviseur, etc.) — editable, glyph picker, drag&drop
+                    // Custom groups (INFRA, Hypervisor, etc.) — editable, glyph picker, drag&drop
                     Repeater {
                         model: service ? service.groupCounts.filter(function(g){ return g.group!=="Favorites" && g.group!=="Recent" && g.group!=="Windows" && g.group!=="Linux" }) : []
                         delegate: ColumnLayout {
@@ -746,47 +761,37 @@ Panel {
                                         if (sid && service) service.moveServerToGroup(sid, grpDelCustom.grpName)
                                     }
                                 }
+                                // toggle behind content so buttons remain clickable
+                                MouseArea {
+                                    anchors.fill: parent
+                                    z: 0
+                                    cursorShape: Qt.PointingHandCursor
+                                    propagateComposedEvents: true
+                                    onClicked: function(mouse){ if (mouse.button===Qt.LeftButton && root.editingGroup!==grpDelCustom.grpName) if(service) service.toggleGroup(grpDelCustom.grpName) }
+                                }
                                 RowLayout {
                                     anchors.fill: parent
                                     anchors.leftMargin: Style.space(8)
                                     anchors.rightMargin: Style.space(8)
                                     spacing: Style.space(6)
+                                    z: 1
                                     Label { textFormat: Text.PlainText; text: grpDelCustom.collapsed ? "" : ""; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: capSize; color: cAccent }
                                     Label { textFormat: Text.PlainText; text: service ? service.groupGlyph(grpDelCustom.grpName) : "󰉋"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: bodySize; color: cAccent }
-                                    TextField {
-                                        visible: root.editingGroup === grpDelCustom.grpName
-                                        Layout.fillWidth: true
-                                        text: root.editingGroupText
-                                        font.family: fontFam; font.pixelSize: bodySize
-                                        onTextChanged: root.editingGroupText = text
-                                        onAccepted: {
-                                            var t = text.trim()
-                                            if (t && t !== grpDelCustom.grpName && service) service.renameGroup(grpDelCustom.grpName, t)
-                                            root.editingGroup = ""
-                                        }
-                                        Component.onCompleted: if (visible) forceActiveFocus()
-                                    }
                                     Label {
-                                        visible: root.editingGroup !== grpDelCustom.grpName
                                         Layout.fillWidth: true
                                         textFormat: Text.PlainText
                                         text: grpDelCustom.grpName + "  (" + grpDelCustom.grpCount + ")"
                                         font.family: fontFam; font.pixelSize: bodySize; font.bold: true; color: cFg; elide: Text.ElideRight
-                                        MouseArea {
-                                            anchors.fill: parent
-                                            cursorShape: Qt.PointingHandCursor
-                                            onClicked: { root.editingGroup = grpDelCustom.grpName; root.editingGroupText = grpDelCustom.grpName }
-                                            onDoubleClicked: { root.editingGroup = grpDelCustom.grpName; root.editingGroupText = grpDelCustom.grpName }
-                                        }
                                     }
                                     Button {
                                         iconText: ""
                                         fontFamily: "JetBrainsMono Nerd Font"
                                         fontSize: capSize
-                                        tooltipText: "Choose glyph"
+                                        tooltipText: "Edit group (rename & glyph)"
                                         Layout.preferredWidth: Style.space(22)
                                         Layout.preferredHeight: Style.space(22)
-                                        onClicked: { root.pickingGroup = grpDelCustom.grpName; root.glyphPickerVisible = true }
+                                        z: 2
+                                        onClicked: { root.pickingGroup = grpDelCustom.grpName; root.editingGroupText = grpDelCustom.grpName; root.pendingGlyph = ""; root.glyphPickerVisible = true }
                                     }
                                     Button {
                                         iconText: ""
@@ -795,11 +800,11 @@ Panel {
                                         tooltipText: "Delete group"
                                         Layout.preferredWidth: Style.space(22)
                                         Layout.preferredHeight: Style.space(22)
+                                        z: 2
                                         onClicked: if(service) service.deleteGroup(grpDelCustom.grpName)
                                     }
                                     Rectangle { width: Style.space(22); height: Style.space(16); radius: 8; color: Util.alpha(cAccent,0.18); Label { anchors.centerIn: parent; textFormat: Text.PlainText; text: String(grpDelCustom.grpCount); font.family: fontFam; font.pixelSize: capSize-1; color: cAccent } }
                                 }
-                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; propagateComposedEvents: true; onClicked: function(mouse){ if (mouse.button===Qt.LeftButton && root.editingGroup!==grpDelCustom.grpName) if(service) service.toggleGroup(grpDelCustom.grpName) } }
                             }
                             Label {
                                 Layout.fillWidth: true
@@ -831,8 +836,9 @@ Panel {
                                         MouseArea {
                                             id: dragAreaCustom
                                             anchors.fill: parent
-                                            hoverEnabled: true                                                drag.target: rowDel
-propagateComposedEvents: true
+                                            hoverEnabled: true
+                                            drag.target: rowDelCustom
+                                            propagateComposedEvents: true
                                             onClicked: function(mouse){ mouse.accepted=false }
                                         }
                                         RowLayout {
@@ -840,7 +846,19 @@ propagateComposedEvents: true
                                             anchors.leftMargin: Style.space(8)
                                             anchors.rightMargin: Style.space(4)
                                             spacing: Style.space(6)
-                                            Label { textFormat: Text.PlainText; text: "󰍝"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: capSize; color: cMuted; opacity: 0.5; MouseArea { anchors.fill: parent; cursorShape: Qt.ClosedHandCursor;                                                drag.target: rowDel
+                                            Label {
+                                                textFormat: Text.PlainText
+                                                text: "󰍝"
+                                                font.family: "JetBrainsMono Nerd Font"
+                                                font.pixelSize: capSize
+                                                color: cMuted
+                                                opacity: 0.5
+                                                MouseArea {
+                                                    anchors.fill: parent
+                                                    cursorShape: Qt.ClosedHandCursor
+                                                    drag.target: rowDelCustom
+                                                }
+                                            }
                                             Rectangle { width: Style.space(28); height: Style.space(28); radius: Style.space(4); color: Util.alpha(root.protoColor(modelData.protocol),0.14); border.color: Util.alpha(root.protoColor(modelData.protocol),0.35); border.width: 1; Label { anchors.centerIn: parent; textFormat: Text.PlainText; text: root.protoGlyph(modelData.protocol); font.family: "JetBrainsMono Nerd Font"; font.pixelSize: bodySize; color: root.protoColor(modelData.protocol) } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 0; Label { Layout.fillWidth: true; textFormat: Text.PlainText; text: modelData.name; font.family: fontFam; font.pixelSize: bodySize; color: cFg; elide: Text.ElideRight } Label { Layout.fillWidth: true; textFormat: Text.PlainText; text: (modelData.domain && modelData.username ? modelData.domain+"\\"+modelData.username+"@" : modelData.username ? modelData.username+"@" : "")+modelData.host+(modelData.port ? ":"+modelData.port:"")+" · "+modelData.protocol; font.family: fontFam; font.pixelSize: capSize; color: cMuted; elide: Text.ElideRight } }
                                             RowLayout { spacing: Style.space(2); Button { iconText: modelData.favorite===true ? "" : ""; fontFamily: "JetBrainsMono Nerd Font"; fontSize: capSize; tooltipText: modelData.favorite===true ? "Remove from favorites" : "Add to favorites"; Layout.preferredWidth: Style.space(26); Layout.preferredHeight: Style.space(26); onClicked: if(service) service.toggleFavorite(modelData.id) } Button { iconText: modelData.protocol==="SSH" ? "" : modelData.protocol==="RDP" ? "" : modelData.protocol==="VNC" ? "󰢹" : "󰹑"; fontFamily: "JetBrainsMono Nerd Font"; fontSize: bodySize; tooltipText: "Connect ("+modelData.protocol+")"; Layout.preferredWidth: Style.space(30); Layout.preferredHeight: Style.space(26); onClicked: if(service) service.launchServer(modelData.id) } Button { iconText: ""; fontFamily: "JetBrainsMono Nerd Font"; fontSize: capSize; tooltipText: "Edit"; Layout.preferredWidth: Style.space(26); Layout.preferredHeight: Style.space(26); onClicked: root.openEdit(modelData) } Button { iconText: ""; fontFamily: "JetBrainsMono Nerd Font"; fontSize: capSize; tooltipText: "Delete"; Layout.preferredWidth: Style.space(26); Layout.preferredHeight: Style.space(26); onClicked: { root.confirmTargetId=modelData.id; root.confirmTargetName=modelData.name; root.confirmVisible=true } } }
@@ -882,17 +900,38 @@ propagateComposedEvents: true
                                         if (sid && service) service.moveServerToGroup(sid, grpDelDefault.grpName)
                                     }
                                 }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    z: 0
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: if(service) service.toggleGroup(grpDelDefault.grpName)
+                                }
                                 RowLayout {
                                     anchors.fill: parent
                                     anchors.leftMargin: Style.space(8)
                                     anchors.rightMargin: Style.space(8)
                                     spacing: Style.space(6)
+                                    z: 1
                                     Label { textFormat: Text.PlainText; text: grpDelDefault.collapsed ? "" : ""; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: capSize; color: cAccent }
                                     Label { textFormat: Text.PlainText; text: service ? service.groupGlyph(grpDelDefault.grpName) : "󰉋"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: bodySize; color: cAccent }
-                                    Label { Layout.fillWidth: true; textFormat: Text.PlainText; text: grpDelDefault.grpName + "  (" + grpDelDefault.grpCount + ")"; font.family: fontFam; font.pixelSize: bodySize; font.bold: true; color: cFg; elide: Text.ElideRight }
+                                    Label {
+                                        Layout.fillWidth: true
+                                        textFormat: Text.PlainText
+                                        text: grpDelDefault.grpName + "  (" + grpDelDefault.grpCount + ")"
+                                        font.family: fontFam; font.pixelSize: bodySize; font.bold: true; color: cFg; elide: Text.ElideRight
+                                    }
+                                    Button {
+                                        iconText: ""
+                                        fontFamily: "JetBrainsMono Nerd Font"
+                                        fontSize: capSize
+                                        tooltipText: "Edit group (rename & glyph)"
+                                        Layout.preferredWidth: Style.space(22)
+                                        Layout.preferredHeight: Style.space(22)
+                                        z: 2
+                                        onClicked: { root.pickingGroup = grpDelDefault.grpName; root.editingGroupText = grpDelDefault.grpName; root.pendingGlyph = ""; root.glyphPickerVisible = true }
+                                    }
                                     Rectangle { width: Style.space(22); height: Style.space(16); radius: 8; color: Util.alpha(cAccent,0.18); Label { anchors.centerIn: parent; textFormat: Text.PlainText; text: String(grpDelDefault.grpCount); font.family: fontFam; font.pixelSize: capSize-1; color: cAccent } }
                                 }
-                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: if(service) service.toggleGroup(grpDelDefault.grpName) }
                             }
                             Label {
                                 Layout.fillWidth: true
@@ -924,8 +963,8 @@ propagateComposedEvents: true
                                         MouseArea {
                                             id: dragAreaDefault
                                             anchors.fill: parent
-                                            hoverEnabled: true                                                drag.target: rowDel
-propagateComposedEvents: true
+                                            hoverEnabled: true
+                                            propagateComposedEvents: true
                                             onClicked: function(mouse){ mouse.accepted=false }
                                         }
                                         RowLayout {
@@ -933,7 +972,19 @@ propagateComposedEvents: true
                                             anchors.leftMargin: Style.space(8)
                                             anchors.rightMargin: Style.space(4)
                                             spacing: Style.space(6)
-                                            Label { textFormat: Text.PlainText; text: "󰍝"; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: capSize; color: cMuted; opacity: 0.5; MouseArea { anchors.fill: parent; cursorShape: Qt.ClosedHandCursor;                                                drag.target: rowDel
+                                            Label {
+                                                textFormat: Text.PlainText
+                                                text: "󰍝"
+                                                font.family: "JetBrainsMono Nerd Font"
+                                                font.pixelSize: capSize
+                                                color: cMuted
+                                                opacity: 0.5
+                                                MouseArea {
+                                                    anchors.fill: parent
+                                                    cursorShape: Qt.ClosedHandCursor
+                                                    drag.target: rowDelDefault
+                                                }
+                                            }
                                             Rectangle { width: Style.space(28); height: Style.space(28); radius: Style.space(4); color: Util.alpha(root.protoColor(modelData.protocol),0.14); border.color: Util.alpha(root.protoColor(modelData.protocol),0.35); border.width: 1; Label { anchors.centerIn: parent; textFormat: Text.PlainText; text: root.protoGlyph(modelData.protocol); font.family: "JetBrainsMono Nerd Font"; font.pixelSize: bodySize; color: root.protoColor(modelData.protocol) } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 0; Label { Layout.fillWidth: true; textFormat: Text.PlainText; text: modelData.name; font.family: fontFam; font.pixelSize: bodySize; color: cFg; elide: Text.ElideRight } Label { Layout.fillWidth: true; textFormat: Text.PlainText; text: (modelData.domain && modelData.username ? modelData.domain+"\\"+modelData.username+"@" : modelData.username ? modelData.username+"@" : "")+modelData.host+(modelData.port ? ":"+modelData.port:"")+" · "+modelData.protocol; font.family: fontFam; font.pixelSize: capSize; color: cMuted; elide: Text.ElideRight } }
                                             RowLayout { spacing: Style.space(2); Button { iconText: modelData.favorite===true ? "" : ""; fontFamily: "JetBrainsMono Nerd Font"; fontSize: capSize; tooltipText: modelData.favorite===true ? "Remove from favorites" : "Add to favorites"; Layout.preferredWidth: Style.space(26); Layout.preferredHeight: Style.space(26); onClicked: if(service) service.toggleFavorite(modelData.id) } Button { iconText: modelData.protocol==="SSH" ? "" : modelData.protocol==="RDP" ? "" : modelData.protocol==="VNC" ? "󰢹" : "󰹑"; fontFamily: "JetBrainsMono Nerd Font"; fontSize: bodySize; tooltipText: "Connect ("+modelData.protocol+")"; Layout.preferredWidth: Style.space(30); Layout.preferredHeight: Style.space(26); onClicked: if(service) service.launchServer(modelData.id) } Button { iconText: ""; fontFamily: "JetBrainsMono Nerd Font"; fontSize: capSize; tooltipText: "Edit"; Layout.preferredWidth: Style.space(26); Layout.preferredHeight: Style.space(26); onClicked: root.openEdit(modelData) } Button { iconText: ""; fontFamily: "JetBrainsMono Nerd Font"; fontSize: capSize; tooltipText: "Delete"; Layout.preferredWidth: Style.space(26); Layout.preferredHeight: Style.space(26); onClicked: { root.confirmTargetId=modelData.id; root.confirmTargetName=modelData.name; root.confirmVisible=true } } }
@@ -1016,7 +1067,7 @@ propagateComposedEvents: true
                 Rectangle {
                     anchors.centerIn: parent
                     width: Math.min(parent.width - Style.space(16), Style.space(360))
-                    height: Math.min(parent.height - Style.space(20), Style.space(400))
+                    height: Math.min(parent.height - Style.space(20), Style.space(440))
                     radius: Style.space(8)
                     color: cBg
                     border.color: cAccent
@@ -1028,12 +1079,46 @@ propagateComposedEvents: true
                         Label {
                             Layout.fillWidth: true
                             textFormat: Text.PlainText
-                            text: root.pickingGroup === "__new__" ? "Choose glyph for new group" : "Choose glyph for " + root.pickingGroup
+                            text: root.pickingGroup === "__new__" ? "Choose glyph for new group" : "Edit group"
                             font.family: fontFam
                             font.pixelSize: bodySize
                             font.bold: true
                             color: cFg
                             horizontalAlignment: Text.AlignHCenter
+                        }
+                        // Rename row —  now edits name + glyph in same window
+                        RowLayout {
+                            visible: root.pickingGroup !== "__new__"
+                            Layout.fillWidth: true
+                            spacing: Style.space(6)
+                            Label { textFormat: Text.PlainText; text: "Name"; font.family: fontFam; font.pixelSize: capSize; color: cMuted }
+                            TextField {
+                                Layout.fillWidth: true
+                                placeholderText: "Group name"
+                                text: root.editingGroupText
+                                font.family: fontFam
+                                font.pixelSize: bodySize
+                                onTextChanged: root.editingGroupText = text
+                                onAccepted: {
+                                    var t = text.trim()
+                                    if (!t) return
+                                    var target = root.pickingGroup
+                                    if (service && t !== target) {
+                                        service.renameGroup(target, t)
+                                        target = t
+                                    }
+                                    if (service && root.pendingGlyph) service.setGroupGlyph(target, root.pendingGlyph)
+                                    root.glyphPickerVisible = false
+                                }
+                            }
+                        }
+                        RowLayout {
+                            visible: root.pickingGroup !== "__new__" && root.pendingGlyph !== ""
+                            Layout.fillWidth: true
+                            spacing: Style.space(6)
+                            Label { textFormat: Text.PlainText; text: "New glyph:"; font.family: fontFam; font.pixelSize: capSize; color: cMuted }
+                            Label { textFormat: Text.PlainText; text: root.pendingGlyph; font.family: "JetBrainsMono Nerd Font"; font.pixelSize: bodySize + 6; color: cAccent }
+                            Label { Layout.fillWidth: true; textFormat: Text.PlainText; text: " (will apply on Save)"; font.family: fontFam; font.pixelSize: capSize-1; color: cMuted; opacity: 0.7 }
                         }
                         GlyphPicker {
                             Layout.fillWidth: true
@@ -1041,12 +1126,35 @@ propagateComposedEvents: true
                             onPicked: function(glyph) {
                                 if (root.pickingGroup === "__new__") {
                                     root.newGroupGlyph = glyph
-                                } else if (service) {
-                                    service.setGroupGlyph(root.pickingGroup, glyph)
+                                    root.glyphPickerVisible = false
+                                } else {
+                                    root.pendingGlyph = glyph
                                 }
-                                root.glyphPickerVisible = false
                             }
                             onClosed: root.glyphPickerVisible = false
+                        }
+                        RowLayout {
+                            visible: root.pickingGroup !== "__new__"
+                            Layout.fillWidth: true
+                            spacing: Style.space(6)
+                            Button { text: "Cancel"; fontSize: capSize; Layout.fillWidth: true; onClicked: root.glyphPickerVisible = false }
+                            Button {
+                                text: "Save"
+                                fontSize: capSize
+                                Layout.fillWidth: true
+                                enabled: root.editingGroupText.trim() !== ""
+                                onClicked: {
+                                    var t = root.editingGroupText.trim()
+                                    if (!t) return
+                                    var target = root.pickingGroup
+                                    if (service && t !== target) {
+                                        service.renameGroup(target, t)
+                                        target = t
+                                    }
+                                    if (service && root.pendingGlyph) service.setGroupGlyph(target, root.pendingGlyph)
+                                    root.glyphPickerVisible = false
+                                }
+                            }
                         }
                     }
                 }

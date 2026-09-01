@@ -29,14 +29,18 @@ Item {
     property var collapsedGroups: ({})
 
     function isCollapsed(g) {
-        return collapsedGroups[g] === true
+        return collapsedGroups[g] !== false
     }
     function toggleGroup(g) {
         var cg = Object.assign({}, collapsedGroups)
         cg[g] = !isCollapsed(g)
         collapsedGroups = cg
     }
-    function expandAll() { collapsedGroups = {} }
+    function expandAll() {
+        var cg = {}
+        for (var i=0;i<groupCounts.length;i++) cg[groupCounts[i].group]=false
+        collapsedGroups = cg
+    }
     function collapseAll() {
         var cg = {}
         for (var i=0;i<groupCounts.length;i++) cg[groupCounts[i].group]=true
@@ -154,14 +158,15 @@ Item {
         return out
     }
     function groupGlyph(name) {
-        if (name === "Favorites") return "󰓎"
-        if (name === "Recent") return "󰧓"
-        if (name === "Windows") return ""
-        if (name === "Linux") return ""
+        // custom glyph overrides first (allows Windows/Linux customization)
         for (var i=0;i<extraGroups.length;i++) {
             var g=extraGroups[i]
             if (g && g.name === name && g.glyph) return g.glyph
         }
+        if (name === "Favorites") return "󰓎"
+        if (name === "Recent") return "󰧓"
+        if (name === "Windows") return ""
+        if (name === "Linux") return ""
         return "󰉋" // default folder
     }
     Process {

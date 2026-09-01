@@ -128,63 +128,68 @@ Item {
             Component.onCompleted: forceActiveFocus()
         }
 
-        GridView {
+        Flickable {
             Layout.fillWidth: true
             Layout.fillHeight: true
             Layout.preferredHeight: Style.space(200)
             clip: true
-            cellWidth: Style.space(48)
-            cellHeight: Style.space(48)
-            model: root.filtered
-            delegate: Rectangle {
-                required property var modelData
-                width: GridView.view.cellWidth
-                height: GridView.view.cellHeight
-                radius: Style.space(4)
-                color: GridView.isCurrentItem ? Util.alpha(Color.accent,0.18) : "transparent"
-                border.color: GridView.isCurrentItem ? Color.accent : "transparent"
-                border.width: GridView.isCurrentItem ? 1 : 0
+            contentHeight: flow.implicitHeight
+            contentWidth: width
+            Flow {
+                id: flow
+                width: parent.width
+                spacing: Style.space(4)
+                Repeater {
+                    model: root.filtered
+                    delegate: Rectangle {
+                        id: del
+                        required property var modelData
+                        property int index
+                        width: Style.space(48)
+                        height: Style.space(48)
+                        radius: Style.space(4)
+                        color: "transparent"
+                        border.color: "transparent"
+                        border.width: 0
 
-                Column {
-                    anchors.centerIn: parent
-                    spacing: 2
-                    Text {
-                        textFormat: Text.PlainText
-                        text: parent.parent.modelData.glyph
-                        font.family: "JetBrainsMono Nerd Font"
-                        font.pixelSize: Style.font.title
-                        color: Color.foreground
-                        horizontalAlignment: Text.AlignHCenter
-                        width: parent.width
+                        Column {
+                            anchors.centerIn: parent
+                            width: parent.width - Style.space(4)
+                            spacing: 2
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                textFormat: Text.PlainText
+                                text: del.modelData.glyph
+                                font.family: "JetBrainsMono Nerd Font"
+                                font.pixelSize: Style.font.title
+                                color: Color.foreground
+                                horizontalAlignment: Text.AlignHCenter
+                                width: parent.width
+                            }
+                            Text {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                textFormat: Text.PlainText
+                                text: del.modelData.name
+                                font.family: Style.font.family
+                                font.pixelSize: Style.font.caption - 2
+                                color: Color.muted
+                                horizontalAlignment: Text.AlignHCenter
+                                width: parent.width
+                                elide: Text.ElideRight
+                            }
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.picked(del.modelData.glyph)
+                            onDoubleClicked: root.picked(del.modelData.glyph)
+                        }
                     }
-                    Text {
-                        textFormat: Text.PlainText
-                        text: parent.parent.modelData.name
-                        font.family: Style.font.family
-                        font.pixelSize: Style.font.caption - 2
-                        color: Color.muted
-                        horizontalAlignment: Text.AlignHCenter
-                        width: parent.width
-                        elide: Text.ElideRight
-                    }
-                }
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        GridView.view.currentIndex = index
-                        root.picked(parent.modelData.glyph)
-                    }
-                    onDoubleClicked: root.picked(parent.modelData.glyph)
                 }
             }
             // Keyboard navigation
             Keys.onPressed: function(event) {
                 if (event.key === Qt.Key_Escape) root.closed()
-                else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                    if (currentIndex >=0 && currentIndex < root.filtered.length) root.picked(root.filtered[currentIndex].glyph)
-                    event.accepted = true
-                }
             }
             focus: true
         }
