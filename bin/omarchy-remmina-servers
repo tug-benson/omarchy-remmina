@@ -1,67 +1,186 @@
 #!/usr/bin/env python3
 """
-omarchy-remmina-servers — CRUD for servers.json
-Storage: $HOME/.config/remmina-panel/servers.json
-Schema: { id, name, host, protocol, port, username, group, notes }
-Protocols: RDP, SSH, VNC, SPICE, SFTP, CUSTOM
-Groups: free-form (e.g. Windows, Linux, Infra, Prod)
-No secrets stored — no passwords.
+omarchy-remmina-servers — CRUD for servers.json (hardened)
+Storage: $HOME/.config/remmina-panel/servers.json (0600, parent 0700)
+Limits: file 2MiB, 2000 records, field lengths enforced
+Security: private parent, symlink/owner checks, flock, mkstemp + fsync + atomic rename
 """
-
 import json
 import os
 import sys
 import re
 import uuid
+import fcntl
+import tempfile
 from pathlib import Path
 
 HOME = Path(os.environ.get("HOME", str(Path.home())))
 STORE_DIR = HOME / ".config" / "remmina-panel"
 STORE_FILE = STORE_DIR / "servers.json"
 GROUPS_FILE = STORE_DIR / "groups.json"
+CERT_FILE = STORE_DIR / "cert-exceptions.json"
 
 VALID_PROTOCOLS = {"RDP", "SSH", "VNC", "SPICE", "SFTP", "HTTP", "HTTPS", "CUSTOM"}
-# Normalize input to upper
+
+# --- limits ---
+MAX_FILE_BYTES = 2 * 1024 * 1024
+MAX_RECORDS = 2000
+MAX_GROUPS = 500
+
 def normalize_protocol(p):
     if not p:
         return "RDP"
     u = str(p).strip().upper()
     if u in VALID_PROTOCOLS:
         return u
-    # map common aliases
-    alias = {
-        "RDP": "RDP", "SSH": "SSH", "VNC": "VNC", "SPICE": "SPICE",
-        "SFTP": "SSH", "FTP": "CUSTOM", "TELNET": "CUSTOM",
-        "WWW": "HTTPS", "WEB": "HTTPS"
-    }
+    alias = {"RDP":"RDP","SSH":"SSH","VNC":"VNC","SPICE":"SPICE","SFTP":"SSH","FTP":"CUSTOM","TELNET":"CUSTOM","WWW":"HTTPS","WEB":"HTTPS"}
     return alias.get(u, "CUSTOM")
 
-def load_servers():
-    if not STORE_FILE.exists():
-        return []
+def ensure_private_dir(p: Path):
+    # no-follow, ensure dir is 0700 and owned by user
     try:
-        data = json.loads(STORE_FILE.read_text(encoding="utf-8"))
-        if isinstance(data, list):
-            return data
-        if isinstance(data, dict) and "servers" in data:
-            return data["servers"]
+        if p.exists():
+            if p.is_symlink():
+                raise RuntimeError(f"refusing symlink dir {p}")
+            st = p.lstat()
+            if not p.is_dir():
+                raise RuntimeError(f"not a directory {p}")
+            if st.st_uid != os.getuid():
+                raise RuntimeError(f"wrong owner {p}")
+            # enforce 0700 (owner rwx only)
+            cur = st.st_mode & 0o777
+            if cur != 0o700:
+                try:
+                    p.chmod(0o700)
+                except Exception:
+                    pass
+        else:
+            p.mkdir(parents=True, mode=0o700, exist_ok=True)
+            # mkdir with mode may be affected by umask, enforce
+            try:
+                p.chmod(0o700)
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"FAIL: private dir check {p}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+def safe_read_json(path: Path, max_bytes=MAX_FILE_BYTES):
+    if not path.exists():
+        return None
+    try:
+        if path.is_symlink():
+            print(f"FAIL: refusing symlink {path}", file=sys.stderr)
+            return None
+        st = path.lstat()
+        if st.st_size > max_bytes:
+            print(f"FAIL: file too large {path} {st.st_size} > {max_bytes}", file=sys.stderr)
+            return None
+        if st.st_uid != os.getuid():
+            print(f"FAIL: wrong owner {path}", file=sys.stderr)
+            return None
+        # also verify parent
+        ensure_private_dir(path.parent)
+        data = path.read_text(encoding="utf-8")
+        if len(data.encode('utf-8')) > max_bytes:
+            print(f"FAIL: file too large", file=sys.stderr)
+            return None
+        return json.loads(data)
+    except Exception as e:
+        print(f"FAIL: read {path}: {e}", file=sys.stderr)
+        return None
+
+def safe_write_json(path: Path, obj):
+    ensure_private_dir(path.parent)
+    # verify parent again after ensure
+    if path.is_symlink():
+        print(f"FAIL: refusing symlink {path}", file=sys.stderr)
+        sys.exit(1)
+    data = json.dumps(obj, indent=2, ensure_ascii=False) + "\n"
+    b = data.encode('utf-8')
+    if len(b) > MAX_FILE_BYTES:
+        print(f"FAIL: data too large", file=sys.stderr)
+        sys.exit(1)
+    lock_path = path.parent / (".lock-" + path.name)
+    lock_fd = None
+    try:
+        # Use lock file with flock
+        lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        # ensure lock file is private
+        try:
+            os.fchmod(lock_fd, 0o600)
+        except Exception:
+            pass
+        # create temp in same dir, exclusive
+        fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix="." + path.name + ".tmp.")
+        tmp = Path(tmp_path)
+        try:
+            os.fchmod(fd, 0o600)
+            os.write(fd, b)
+            os.fsync(fd)
+            os.close(fd)
+            fd = -1
+            # fsync temp file and directory
+            # chmod already 0600
+            # atomic replace
+            # ensure tmp is not symlink
+            if tmp.is_symlink():
+                tmp.unlink()
+                raise RuntimeError("tmp is symlink")
+            # fsync directory after rename? do before and after
+            tmp.replace(path)
+            # fsync directory
+            try:
+                dfd = os.open(str(path.parent), os.O_DIRECTORY)
+                os.fsync(dfd)
+                os.close(dfd)
+            except Exception:
+                pass
+        finally:
+            if fd != -1:
+                try:
+                    os.close(fd)
+                except:
+                    pass
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except:
+                    pass
+    finally:
+        if lock_fd is not None:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
+            except:
+                pass
+
+def load_servers():
+    data = safe_read_json(STORE_FILE)
+    if data is None:
         return []
-    except Exception:
-        return []
+    if isinstance(data, list):
+        if len(data) > MAX_RECORDS:
+            print(f"FAIL: too many records {len(data)}", file=sys.stderr)
+            return data[:MAX_RECORDS]
+        return data
+    if isinstance(data, dict) and "servers" in data:
+        lst = data["servers"]
+        if isinstance(lst, list):
+            return lst[:MAX_RECORDS]
+    return []
 
 def save_servers(servers):
-    STORE_DIR.mkdir(parents=True, exist_ok=True)
-    # atomic write
-    tmp = STORE_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(servers, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    tmp.chmod(0o600)
-    tmp.replace(STORE_FILE)
+    if len(servers) > MAX_RECORDS:
+        print(f"FAIL: too many servers {len(servers)} > {MAX_RECORDS}", file=sys.stderr)
+        sys.exit(1)
+    safe_write_json(STORE_FILE, servers)
 
 def sanitize(s, max_len=128):
     if s is None:
         return ""
     s = str(s).strip()
-    # remove control chars
     s = re.sub(r'[\x00-\x1f\x7f]', '', s)
     return s[:max_len]
 
@@ -91,16 +210,13 @@ def validate_server(obj, is_update=False):
     domain = sanitize(obj.get("domain"), 64)
     group = sanitize(obj.get("group"), 64) or "General"
     notes = sanitize(obj.get("notes"), 256)
-    # favorite + lastUsed (persist across updates)
     favorite = bool(obj.get("favorite") is True or str(obj.get("favorite")).lower() in ("1","true","yes"))
-    # lastUsed: epoch ms, 0 if never
     last_used_raw = obj.get("lastUsed") or obj.get("last_used") or 0
     try:
         last_used = int(last_used_raw) if str(last_used_raw).strip() != "" else 0
         if last_used < 0: last_used = 0
     except:
         last_used = 0
-
     server = {
         "id": sanitize(obj.get("id"), 64) or str(uuid.uuid4()),
         "name": name,
@@ -131,9 +247,12 @@ def cmd_get(sid):
     return 1
 
 def cmd_add():
-    raw = sys.stdin.read()
+    raw = sys.stdin.read(64*1024)
     if not raw.strip():
         print("FAIL: empty stdin", file=sys.stderr)
+        return 1
+    if len(raw.encode('utf-8')) > 64*1024:
+        print("FAIL: stdin too large", file=sys.stderr)
         return 1
     try:
         obj = json.loads(raw)
@@ -145,17 +264,21 @@ def cmd_add():
         print(f"FAIL: {err}", file=sys.stderr)
         return 1
     servers = load_servers()
-    # ensure id unique
+    if len(servers) >= MAX_RECORDS:
+        print(f"FAIL: too many servers", file=sys.stderr)
+        return 1
     if any(s.get("id") == server["id"] for s in servers):
         server["id"] = str(uuid.uuid4())
-    # name uniqueness? allow duplicate but warn
     servers.append(server)
     save_servers(servers)
     print(json.dumps(server, ensure_ascii=False))
     return 0
 
 def cmd_update(sid):
-    raw = sys.stdin.read()
+    raw = sys.stdin.read(64*1024)
+    if len(raw.encode('utf-8')) > 64*1024:
+        print("FAIL: stdin too large", file=sys.stderr)
+        return 1
     try:
         obj = json.loads(raw) if raw.strip() else {}
     except Exception as e:
@@ -166,7 +289,6 @@ def cmd_update(sid):
     if not existing:
         print("FAIL: not found", file=sys.stderr)
         return 1
-    # Preserve favorite/lastUsed if not explicitly provided
     if "favorite" not in obj and "favourite" not in obj:
         obj["favorite"] = existing.get("favorite", False)
     if "lastUsed" not in obj and "last_used" not in obj:
@@ -190,7 +312,6 @@ def cmd_favorite(sid, val):
     for i, s in enumerate(servers):
         if s.get("id") == sid:
             servers[i]["favorite"] = bool(val)
-            # Ensure lastUsed exists
             if "lastUsed" not in servers[i]:
                 servers[i]["lastUsed"] = 0
             save_servers(servers)
@@ -224,37 +345,33 @@ def cmd_delete(sid):
     return 0
 
 def load_groups():
-    if not GROUPS_FILE.exists():
+    data = safe_read_json(GROUPS_FILE)
+    if data is None:
         return []
-    try:
-        data = json.loads(GROUPS_FILE.read_text(encoding="utf-8"))
-        if isinstance(data, list):
-            # Support both old string list and new object list {name, glyph}
-            out=[]
-            for x in data:
-                if isinstance(x, str):
-                    out.append({"name": x, "glyph": ""})
-                elif isinstance(x, dict) and "name" in x:
-                    out.append({"name": sanitize(x.get("name"),64), "glyph": sanitize(x.get("glyph"),8)})
-            return out
-        return []
-    except:
-        return []
+    if isinstance(data, list):
+        out=[]
+        for x in data:
+            if isinstance(x, str):
+                out.append({"name": x[:64], "glyph": ""})
+            elif isinstance(x, dict) and "name" in x:
+                out.append({"name": sanitize(x.get("name"),64), "glyph": sanitize(x.get("glyph"),8)})
+        if len(out) > MAX_GROUPS:
+            out = out[:MAX_GROUPS]
+        return out
+    return []
 
 def save_groups(groups):
-    STORE_DIR.mkdir(parents=True, exist_ok=True)
-    # groups is list of {name, glyph}
+    if len(groups) > MAX_GROUPS:
+        print(f"FAIL: too many groups", file=sys.stderr)
+        sys.exit(1)
     uniq={}
     for g in groups:
         if isinstance(g, dict) and g.get("name"):
-            uniq[g["name"]] = g.get("glyph","")
+            uniq[g["name"]] = g.get("glyph","")[:8]
         elif isinstance(g, str) and g:
-            uniq[g] = ""
+            uniq[g[:64]] = ""
     out=[{"name": k, "glyph": v} for k,v in sorted(uniq.items())]
-    tmp = GROUPS_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(out, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    tmp.chmod(0o600)
-    tmp.replace(GROUPS_FILE)
+    safe_write_json(GROUPS_FILE, out)
 
 def load_groups_names():
     return [g["name"] for g in load_groups()]
@@ -280,6 +397,9 @@ def cmd_group_add(name, glyph=""):
         print("FAIL: invalid group name", file=sys.stderr)
         return 1
     groups = load_groups()
+    if len(groups) >= MAX_GROUPS:
+        print("FAIL: too many groups", file=sys.stderr)
+        return 1
     names = [g["name"] for g in groups]
     if name not in names:
         groups.append({"name": name, "glyph": glyph})
@@ -344,7 +464,9 @@ def cmd_group_set_glyph(name, glyph):
             save_groups(groups)
             print(json.dumps(groups, ensure_ascii=False))
             return 0
-    # If not found, add it
+    if len(groups) >= MAX_GROUPS:
+        print("FAIL: too many groups", file=sys.stderr)
+        return 1
     groups.append({"name": name, "glyph": glyph})
     save_groups(groups)
     print(json.dumps(groups, ensure_ascii=False))
@@ -365,10 +487,45 @@ def cmd_move(sid, new_group):
     print("FAIL: not found", file=sys.stderr)
     return 1
 
+def load_cert_exceptions():
+    data = safe_read_json(CERT_FILE)
+    if isinstance(data, list):
+        return set(sanitize(x,253) for x in data if isinstance(x,str))
+    return set()
+
+def save_cert_exceptions(s):
+    safe_write_json(CERT_FILE, sorted(list(s)))
+
+def cmd_cert_allow(host):
+    host = sanitize(host,253)
+    if not host:
+        print("FAIL: host required", file=sys.stderr)
+        return 1
+    s = load_cert_exceptions()
+    s.add(host)
+    if len(s) > 500:
+        print("FAIL: too many exceptions", file=sys.stderr)
+        return 1
+    save_cert_exceptions(s)
+    print(json.dumps(sorted(list(s)), ensure_ascii=False))
+    return 0
+
+def cmd_cert_revoke(host):
+    host = sanitize(host,253)
+    s = load_cert_exceptions()
+    s.discard(host)
+    save_cert_exceptions(s)
+    print(json.dumps(sorted(list(s)), ensure_ascii=False))
+    return 0
+
+def cmd_cert_list():
+    s = load_cert_exceptions()
+    print(json.dumps(sorted(list(s)), ensure_ascii=False))
+    return 0
+
 def cmd_stats():
     servers = load_servers()
     total = len(servers)
-    # classify: RDP -> windows, SSH/VNC/SPICE -> linux, rest other
     windows = sum(1 for s in servers if s.get("protocol") == "RDP")
     linux = sum(1 for s in servers if s.get("protocol") in ("SSH", "VNC", "SPICE", "SFTP"))
     other = total - windows - linux
@@ -376,13 +533,7 @@ def cmd_stats():
     for s in servers:
         g = s.get("group") or "General"
         groups[g] = groups.get(g, 0) + 1
-    print(json.dumps({
-        "total": total,
-        "windows": windows,
-        "linux": linux,
-        "other": other,
-        "groups": groups
-    }, ensure_ascii=False))
+    print(json.dumps({"total": total,"windows": windows,"linux": linux,"other": other,"groups": groups}, ensure_ascii=False))
     return 0
 
 def usage():
@@ -391,7 +542,7 @@ def usage():
 Commands:
   list                 List all servers (JSON array to stdout)
   get <id>             Get single server
-  add                  Add server (read JSON from stdin)
+  add                  Add server (read JSON from stdin, max 64KiB)
   update <id>          Update server (read JSON from stdin)
   delete <id>          Delete server
   groups               List groups with counts
@@ -399,13 +550,15 @@ Commands:
   group-add <name>     Add empty custom group
   group-rename <old> <new>  Rename group (updates servers)
   group-delete <name>  Delete empty group (moves servers to General)
+  group-glyph <name> <glyph> Set group glyph
   move <id> <group>    Move server to group
   stats                Stats: total/windows/linux/other
   favorite <id> <0|1>  Toggle favorite
   touch <id>           Update lastUsed to now (for Recent)
+  cert-allow <host>    Allow cert exception for host (pin/TOFU)
+  cert-revoke <host>   Revoke cert exception
+  cert-list            List cert exceptions
   help
-Expected JSON for add/update:
-  { name, host, protocol(RDP|SSH|VNC|SPICE), port, username, domain, group, notes, favorite, lastUsed }
 """, file=sys.stderr)
 
 if __name__ == "__main__":
@@ -445,6 +598,12 @@ if __name__ == "__main__":
         sys.exit(cmd_favorite(sys.argv[2], v))
     elif cmd == "touch" and len(sys.argv) == 3:
         sys.exit(cmd_touch(sys.argv[2]))
+    elif cmd == "cert-allow" and len(sys.argv) == 3:
+        sys.exit(cmd_cert_allow(sys.argv[2]))
+    elif cmd == "cert-revoke" and len(sys.argv) == 3:
+        sys.exit(cmd_cert_revoke(sys.argv[2]))
+    elif cmd == "cert-list":
+        sys.exit(cmd_cert_list())
     elif cmd in ("help", "--help", "-h"):
         usage()
         sys.exit(0)

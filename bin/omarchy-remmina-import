@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
 """
-omarchy-remmina-import — import servers from CSV/TXT, SSH config, or Remmina files
-Usage:
-  omarchy-remmina-import csv <path.csv>       # CSV with header: name,host,protocol,port,username,group,notes
-  omarchy-remmina-import txt <path.txt>       # TXT lines: name;host;protocol;port;username;group
-  omarchy-remmina-import ssh                  # imports from ~/.ssh/config (Host entries)
-  omarchy-remmina-import remmina              # imports from ~/.local/share/remmina/*.remmina
-  omarchy-remmina-import csv-stdin            # read CSV from stdin
-Returns JSON { imported: n, skipped: n, errors: [...] }
+omarchy-remmina-import — import servers from CSV/TXT, SSH config, or Remmina files (hardened)
+Limits: file 2MiB, 10000 lines, 1000 records, field lengths enforced, JSON 2MiB
+Security: private parent checks, safe writes via servers helper
 """
-
 import csv
 import json
 import os
@@ -17,26 +11,120 @@ import re
 import sys
 import uuid
 import configparser
+import fcntl
+import tempfile
 from pathlib import Path
 
 HOME = Path(os.environ.get("HOME", str(Path.home())))
 STORE_FILE = HOME / ".config" / "remmina-panel" / "servers.json"
+STORE_DIR = STORE_FILE.parent
+
+MAX_FILE_BYTES = 2 * 1024 * 1024
+MAX_LINES = 10000
+MAX_RECORDS = 1000
+MAX_FIELD_LEN = 256
+MAX_JSON_BYTES = 2 * 1024 * 1024
+
+def ensure_private_dir(p: Path):
+    try:
+        if p.exists():
+            if p.is_symlink():
+                raise RuntimeError(f"symlink {p}")
+            st = p.lstat()
+            if not p.is_dir():
+                raise RuntimeError(f"not dir {p}")
+            if st.st_uid != os.getuid():
+                raise RuntimeError(f"wrong owner {p}")
+            if (st.st_mode & 0o777) != 0o700:
+                try:
+                    p.chmod(0o700)
+                except:
+                    pass
+        else:
+            p.mkdir(parents=True, mode=0o700, exist_ok=True)
+            try:
+                p.chmod(0o700)
+            except:
+                pass
+    except Exception as e:
+        print(json.dumps({"imported":0,"skipped":0,"errors":[f"private dir {e}"]}))
+        sys.exit(1)
+
+def safe_read_text_limited(path: Path, max_bytes=MAX_FILE_BYTES):
+    if not path.exists():
+        raise FileNotFoundError(str(path))
+    if path.is_symlink():
+        raise RuntimeError(f"refusing symlink {path}")
+    st = path.lstat()
+    if st.st_size > max_bytes:
+        raise RuntimeError(f"file too large {st.st_size} > {max_bytes}")
+    if st.st_uid != os.getuid():
+        # allow reading ssh config even if different owner? but require same user for imports
+        pass
+    # check parent not symlink for our store, but for input files allow
+    data = path.read_bytes()
+    if len(data) > max_bytes:
+        raise RuntimeError("file too large")
+    try:
+        return data.decode('utf-8', errors='ignore')
+    except:
+        return data.decode('utf-8', errors='ignore')
 
 def load_servers():
     if not STORE_FILE.exists():
         return []
     try:
+        ensure_private_dir(STORE_DIR)
+        if STORE_FILE.is_symlink():
+            return []
+        st = STORE_FILE.lstat()
+        if st.st_size > MAX_FILE_BYTES:
+            return []
         data = json.loads(STORE_FILE.read_text(encoding="utf-8"))
         return data if isinstance(data, list) else []
     except:
         return []
 
-def save_servers(servers):
-    STORE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = STORE_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(servers, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    tmp.chmod(0o600)
-    tmp.replace(STORE_FILE)
+def safe_write_servers(servers):
+    ensure_private_dir(STORE_DIR)
+    if len(servers) > 2000:
+        servers = servers[:2000]
+    data = json.dumps(servers, indent=2, ensure_ascii=False) + "\n"
+    b = data.encode('utf-8')
+    if len(b) > MAX_FILE_BYTES:
+        raise RuntimeError("data too large")
+    lock_path = STORE_DIR / ".lock-servers.json"
+    lock_fd = os.open(lock_path, os.O_CREAT|os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        fd, tmp_path = tempfile.mkstemp(dir=str(STORE_DIR), prefix=".servers.json.tmp.")
+        tmp = Path(tmp_path)
+        try:
+            os.fchmod(fd, 0o600)
+            os.write(fd, b)
+            os.fsync(fd)
+            os.close(fd)
+            fd = -1
+            tmp.replace(STORE_FILE)
+            try:
+                dfd = os.open(str(STORE_DIR), os.O_DIRECTORY)
+                os.fsync(dfd)
+                os.close(dfd)
+            except:
+                pass
+        finally:
+            if fd != -1:
+                try: os.close(fd)
+                except: pass
+            if tmp.exists():
+                try: tmp.unlink()
+                except: pass
+    finally:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
+        except:
+            pass
 
 def sanitize_name(s): return re.sub(r'[\x00-\x1f\x7f]', '', str(s).strip())[:64] if s else ""
 def sanitize_host(s): return re.sub(r'[\x00-\x1f\x7f]', '', str(s).strip())[:253] if s else ""
@@ -52,16 +140,25 @@ def existing_keys(servers):
     return {(s.get("name","").lower(), s.get("host","").lower()) for s in servers}
 
 def import_records(records):
+    if len(records) > MAX_RECORDS:
+        records = records[:MAX_RECORDS]
     servers = load_servers()
     keys = existing_keys(servers)
     imported = 0
     skipped = 0
     errors = []
     for rec in records:
-        name = sanitize_name(rec.get("name"))
-        host = sanitize_host(rec.get("host"))
+        if imported + skipped >= MAX_RECORDS:
+            errors.append("record limit reached")
+            break
+        name = sanitize_name(rec.get("name"))[:64]
+        host = sanitize_host(rec.get("host"))[:253]
         if not name or not host:
             errors.append(f"skip invalid name/host: {rec}")
+            skipped += 1
+            continue
+        if len(name) > 64 or len(host) > 253:
+            errors.append(f"field too long {name}")
             skipped += 1
             continue
         key = (name.lower(), host.lower())
@@ -69,7 +166,7 @@ def import_records(records):
             skipped += 1
             continue
         protocol = normalize_protocol(rec.get("protocol"))
-        port = str(rec.get("port","")).strip()
+        port = str(rec.get("port","")).strip()[:10]
         if port and not port.isdigit():
             errors.append(f"invalid port for {name}: {port}")
             port = ""
@@ -78,55 +175,44 @@ def import_records(records):
             port = ""
         username = sanitize_name(rec.get("username"))[:64]
         domain = sanitize_name(rec.get("domain"))[:64]
-        group = sanitize_name(rec.get("group")) or "General"
+        group = sanitize_name(rec.get("group"))[:64] or "General"
         notes = re.sub(r'[\x00-\x1f\x7f]','', str(rec.get("notes","")).strip())[:256]
-        srv = {
-            "id": str(uuid.uuid4()),
-            "name": name,
-            "host": host,
-            "protocol": protocol,
-            "port": port,
-            "username": username,
-            "domain": domain,
-            "group": group,
-            "notes": notes,
-            "favorite": False,
-            "lastUsed": 0
-        }
+        srv = {"id": str(uuid.uuid4()),"name": name,"host": host,"protocol": protocol,"port": port,"username": username,"domain": domain,"group": group,"notes": notes,"favorite": False,"lastUsed": 0}
         servers.append(srv)
         keys.add(key)
         imported += 1
     if imported:
-        save_servers(servers)
-    return {"imported": imported, "skipped": skipped, "errors": errors}
+        try:
+            safe_write_servers(servers)
+        except Exception as e:
+            return {"imported":0,"skipped":0,"errors":[str(e)]}
+    return {"imported": imported, "skipped": skipped, "errors": errors[:10]}
 
 def import_csv_file(path):
     try:
-        text = Path(path).read_text(encoding="utf-8", errors="ignore")
-    except Exception as e:
-        print(json.dumps({"imported":0,"skipped":0,"errors":[str(e)]}))
-        return 1
-    # Detect delimiter
-    try:
-        reader = csv.DictReader(text.splitlines())
+        p = Path(path)
+        # no-follow for input? allow regular file, but check symlink
+        if p.is_symlink():
+            print(json.dumps({"imported":0,"skipped":0,"errors":["refusing symlink"]}))
+            return 1
+        text = safe_read_text_limited(p)
+        lines = text.splitlines()
+        if len(lines) > MAX_LINES:
+            print(json.dumps({"imported":0,"skipped":0,"errors":[f"too many lines {len(lines)} > {MAX_LINES}"]}))
+            return 1
+        reader = csv.DictReader(lines)
         if reader.fieldnames is None:
             print(json.dumps({"imported":0,"skipped":0,"errors":["empty or no header"]}))
             return 1
-        # normalize fieldnames lower
+        if len(reader.fieldnames) > 20:
+            print(json.dumps({"imported":0,"skipped":0,"errors":["too many columns"]}))
+            return 1
         records = []
-        for row in reader:
-            # normalize keys
-            norm = { (k or "").strip().lower(): (v or "").strip() for k,v in row.items() }
-            records.append({
-                "name": norm.get("name") or norm.get("nom") or "",
-                "host": norm.get("host") or norm.get("ip") or norm.get("server") or norm.get("hostname") or "",
-                "protocol": norm.get("protocol") or norm.get("proto") or norm.get("type") or "",
-                "port": norm.get("port") or "",
-                "username": norm.get("username") or norm.get("user") or norm.get("login") or "",
-                "domain": norm.get("domain") or "",
-                "group": norm.get("group") or norm.get("groupe") or "",
-                "notes": norm.get("notes") or norm.get("note") or norm.get("comment") or ""
-            })
+        for idx, row in enumerate(reader):
+            if idx >= MAX_RECORDS:
+                break
+            norm = { (k or "").strip().lower(): (v or "").strip()[:MAX_FIELD_LEN] for k,v in row.items() }
+            records.append({"name": norm.get("name") or norm.get("nom") or "","host": norm.get("host") or norm.get("ip") or norm.get("server") or norm.get("hostname") or "","protocol": norm.get("protocol") or norm.get("proto") or norm.get("type") or "","port": norm.get("port") or "","username": norm.get("username") or norm.get("user") or norm.get("login") or "","domain": norm.get("domain") or "","group": norm.get("group") or norm.get("groupe") or "","notes": norm.get("notes") or norm.get("note") or norm.get("comment") or ""})
         result = import_records(records)
         print(json.dumps(result, ensure_ascii=False))
         return 0
@@ -135,26 +221,28 @@ def import_csv_file(path):
         return 1
 
 def import_csv_stdin():
-    text = sys.stdin.read()
-    # write temp
+    text = sys.stdin.read(MAX_FILE_BYTES)
+    if len(text.encode('utf-8')) >= MAX_FILE_BYTES:
+        # check if more data available
+        extra = sys.stdin.read(1)
+        if extra:
+            print(json.dumps({"imported":0,"skipped":0,"errors":["stdin too large"]}))
+            return 1
+    lines = text.splitlines()
+    if len(lines) > MAX_LINES:
+        print(json.dumps({"imported":0,"skipped":0,"errors":["too many lines"]}))
+        return 1
     try:
-        reader = csv.DictReader(text.splitlines())
+        reader = csv.DictReader(lines)
         if reader.fieldnames is None:
             print(json.dumps({"imported":0,"skipped":0,"errors":["empty"]}))
             return 1
         records = []
-        for row in reader:
-            norm = { (k or "").strip().lower(): (v or "").strip() for k,v in row.items() }
-            records.append({
-                "name": norm.get("name") or "",
-                "host": norm.get("host") or norm.get("ip") or norm.get("server") or "",
-                "protocol": norm.get("protocol") or "",
-                "port": norm.get("port") or "",
-                "username": norm.get("username") or norm.get("user") or "",
-                "domain": norm.get("domain") or "",
-                "group": norm.get("group") or "",
-                "notes": norm.get("notes") or ""
-            })
+        for idx, row in enumerate(reader):
+            if idx >= MAX_RECORDS:
+                break
+            norm = { (k or "").strip().lower(): (v or "").strip()[:MAX_FIELD_LEN] for k,v in row.items() }
+            records.append({"name": norm.get("name") or "","host": norm.get("host") or norm.get("ip") or norm.get("server") or "","protocol": norm.get("protocol") or "","port": norm.get("port") or "","username": norm.get("username") or norm.get("user") or "","domain": norm.get("domain") or "","group": norm.get("group") or "","notes": norm.get("notes") or ""})
         result = import_records(records)
         print(json.dumps(result, ensure_ascii=False))
         return 0
@@ -164,147 +252,181 @@ def import_csv_stdin():
 
 def import_txt_file(path):
     try:
-        lines = Path(path).read_text(encoding="utf-8", errors="ignore").splitlines()
+        p = Path(path)
+        if p.is_symlink():
+            print(json.dumps({"imported":0,"skipped":0,"errors":["refusing symlink"]}))
+            return 1
+        text = safe_read_text_limited(p)
+        lines = text.splitlines()
+        if len(lines) > MAX_LINES:
+            print(json.dumps({"imported":0,"skipped":0,"errors":["too many lines"]}))
+            return 1
+        records = []
+        for idx, line in enumerate(lines):
+            if idx >= MAX_RECORDS:
+                break
+            line=line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if len(line) > 512:
+                continue
+            parts = re.split(r'[;\t,|]', line)
+            parts = [p.strip()[:MAX_FIELD_LEN] for p in parts]
+            if len(parts) > 10:
+                parts = parts[:10]
+            rec = {"name": parts[0] if len(parts)>0 else "","host": parts[1] if len(parts)>1 else "","protocol": parts[2] if len(parts)>2 else "","port": parts[3] if len(parts)>3 else "","username": parts[4] if len(parts)>4 else "","domain": parts[5] if len(parts)>5 else "","group": parts[6] if len(parts)>6 else "","notes": parts[7] if len(parts)>7 else ""}
+            records.append(rec)
+        result = import_records(records)
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
     except Exception as e:
         print(json.dumps({"imported":0,"skipped":0,"errors":[str(e)]}))
         return 1
-    records = []
-    for line in lines:
-        line=line.strip()
-        if not line or line.startswith("#"):
-            continue
-        # split by ; or , or \t
-        parts = re.split(r'[;\t,|]', line)
-        parts = [p.strip() for p in parts]
-        # Expected: name,host,protocol,port,username,domain,group
-        rec = {
-            "name": parts[0] if len(parts)>0 else "",
-            "host": parts[1] if len(parts)>1 else "",
-            "protocol": parts[2] if len(parts)>2 else "",
-            "port": parts[3] if len(parts)>3 else "",
-            "username": parts[4] if len(parts)>4 else "",
-            "domain": parts[5] if len(parts)>5 else "",
-            "group": parts[6] if len(parts)>6 else "",
-            "notes": parts[7] if len(parts)>7 else ""
-        }
-        records.append(rec)
-    result = import_records(records)
-    print(json.dumps(result, ensure_ascii=False))
-    return 0
 
 def import_ssh():
     cfg = HOME / ".ssh" / "config"
-    if not cfg.exists():
-        print(json.dumps({"imported":0,"skipped":0,"errors":["~/.ssh/config not found"]}))
-        return 0
-    text = cfg.read_text(encoding="utf-8", errors="ignore")
-    records = []
-    current = None
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        # Host line
-        m = re.match(r'^\s*Host\s+(.+)$', line, re.IGNORECASE)
-        if m:
-            hosts = m.group(1).strip().split()
-            # skip wildcards
-            hosts = [h for h in hosts if "*" not in h and "?" not in h and "!" not in h]
-            if not hosts:
-                current = None
+    try:
+        if not cfg.exists():
+            print(json.dumps({"imported":0,"skipped":0,"errors":["~/.ssh/config not found"]}))
+            return 0
+        if cfg.is_symlink():
+            # allow symlink for ssh config? but check owner
+            pass
+        st = cfg.lstat()
+        if st.st_size > MAX_FILE_BYTES:
+            print(json.dumps({"imported":0,"skipped":0,"errors":["ssh config too large"]}))
+            return 1
+        text = cfg.read_text(encoding="utf-8", errors="ignore")
+        if len(text.encode('utf-8')) > MAX_FILE_BYTES:
+            print(json.dumps({"imported":0,"skipped":0,"errors":["ssh config too large"]}))
+            return 1
+        lines = text.splitlines()
+        if len(lines) > MAX_LINES:
+            lines = lines[:MAX_LINES]
+        records = []
+        current = None
+        for line in lines:
+            if len(line) > 1024:
                 continue
-            # We'll create entry per Host alias (first alias as name, HostName as host if present)
-            for h in hosts:
-                current = {"name": h, "host": h, "protocol": "SSH", "port": "", "username": "", "group": "Linux", "notes": "imported from ~/.ssh/config"}
-                records.append(current)
-            continue
-        if current is None:
-            continue
-        # HostName
-        m2 = re.match(r'^\s*HostName\s+(.+)$', line, re.IGNORECASE)
-        if m2:
-            current["host"] = m2.group(1).strip()
-            continue
-        m3 = re.match(r'^\s*User\s+(.+)$', line, re.IGNORECASE)
-        if m3:
-            current["username"] = m3.group(1).strip()
-            continue
-        m4 = re.match(r'^\s*Port\s+(.+)$', line, re.IGNORECASE)
-        if m4:
-            current["port"] = m4.group(1).strip()
-            continue
-    # deduplicate records by name
-    seen=set()
-    dedup=[]
-    for r in records:
-        if r["name"] not in seen:
-            seen.add(r["name"])
-            dedup.append(r)
-    result = import_records(dedup)
-    print(json.dumps(result, ensure_ascii=False))
-    return 0
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            m = re.match(r'^\s*Host\s+(.+)$', line, re.IGNORECASE)
+            if m:
+                hosts = m.group(1).strip().split()
+                hosts = [h for h in hosts if "*" not in h and "?" not in h and "!" not in h]
+                if not hosts:
+                    current = None
+                    continue
+                # limit hosts per line
+                hosts = hosts[:10]
+                for h in hosts:
+                    if len(records) >= MAX_RECORDS:
+                        break
+                    h = h[:64]
+                    current = {"name": h, "host": h, "protocol": "SSH", "port": "", "username": "", "group": "Linux", "notes": "imported from ~/.ssh/config"}
+                    records.append(current)
+                continue
+            if current is None:
+                continue
+            m2 = re.match(r'^\s*HostName\s+(.+)$', line, re.IGNORECASE)
+            if m2:
+                current["host"] = m2.group(1).strip()[:253]
+                continue
+            m3 = re.match(r'^\s*User\s+(.+)$', line, re.IGNORECASE)
+            if m3:
+                current["username"] = m3.group(1).strip()[:64]
+                continue
+            m4 = re.match(r'^\s*Port\s+(.+)$', line, re.IGNORECASE)
+            if m4:
+                current["port"] = m4.group(1).strip()[:10]
+                continue
+        seen=set()
+        dedup=[]
+        for r in records:
+            if r["name"] not in seen:
+                seen.add(r["name"])
+                dedup.append(r)
+            if len(dedup) >= MAX_RECORDS:
+                break
+        result = import_records(dedup)
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+    except Exception as e:
+        print(json.dumps({"imported":0,"skipped":0,"errors":[str(e)]}))
+        return 1
 
 def import_remmina():
     rem_dir = HOME / ".local" / "share" / "remmina"
-    if not rem_dir.exists():
-        print(json.dumps({"imported":0,"skipped":0,"errors":[f"{rem_dir} not found"]}))
-        return 0
-    files = list(rem_dir.glob("*.remmina"))
-    if not files:
-        print(json.dumps({"imported":0,"skipped":0,"errors":["no .remmina files"]}))
-        return 0
-    records=[]
-    for f in files:
-        try:
-            cp = configparser.ConfigParser()
-            # remmina files may have no section? Actually [remmina]
-            cp.read(f, encoding="utf-8")
-            if "remmina" not in cp:
+    try:
+        if not rem_dir.exists():
+            print(json.dumps({"imported":0,"skipped":0,"errors":[f"{rem_dir} not found"]}))
+            return 0
+        if rem_dir.is_symlink():
+            print(json.dumps({"imported":0,"skipped":0,"errors":["refusing symlink"]}))
+            return 1
+        files = list(rem_dir.glob("*.remmina"))
+        if len(files) > MAX_RECORDS:
+            files = files[:MAX_RECORDS]
+        if not files:
+            print(json.dumps({"imported":0,"skipped":0,"errors":["no .remmina files"]}))
+            return 0
+        records=[]
+        for f in files:
+            if f.is_symlink():
                 continue
-            sec = cp["remmina"]
-            name = sec.get("name", f.stem)
-            server = sec.get("server", "")
-            protocol = sec.get("protocol", "RDP")
-            # server may contain :port
-            host = server
-            port = ""
-            if ":" in server:
-                # handle ipv6? simple
-                if server.count(":") == 1:
-                    h,p = server.rsplit(":",1)
-                    if p.isdigit():
-                        host = h
-                        port = p
-            username = sec.get("username", "")
-            domain = sec.get("domain", "")
-            group = sec.get("group", "")
-            if not group:
-                # infer group from protocol
-                group = "Windows" if protocol.upper()=="RDP" else "Linux" if protocol.upper() in ("SSH","VNC","SPICE") else "General"
-            # remmina group may be empty; use inferred
-            notes = ""
-            records.append({
-                "name": name,
-                "host": host,
-                "protocol": protocol,
-                "port": port,
-                "username": username,
-                "domain": domain,
-                "group": group,
-                "notes": notes
-            })
-        except Exception as e:
-            continue
-    result = import_records(records)
-    print(json.dumps(result, ensure_ascii=False))
-    return 0
+            try:
+                st = f.lstat()
+                if st.st_size > 64*1024:
+                    continue
+                if st.st_uid != os.getuid():
+                    continue
+                cp = configparser.ConfigParser()
+                cp.read(f, encoding="utf-8")
+                if "remmina" not in cp:
+                    continue
+                sec = cp["remmina"]
+                name = sec.get("name", f.stem)[:64]
+                server = sec.get("server", "")[:253]
+                protocol = sec.get("protocol", "RDP")[:20]
+                host = server
+                port = ""
+                if ":" in server:
+                    if server.count(":") == 1:
+                        h,p = server.rsplit(":",1)
+                        if p.isdigit():
+                            host = h[:253]
+                            port = p[:10]
+                username = sec.get("username", "")[:64]
+                domain = sec.get("domain", "")[:64]
+                group = sec.get("group", "")[:64]
+                if not group:
+                    group = "Windows" if protocol.upper()=="RDP" else "Linux" if protocol.upper() in ("SSH","VNC","SPICE") else "General"
+                records.append({"name": name,"host": host,"protocol": protocol,"port": port,"username": username,"domain": domain,"group": group,"notes": ""})
+                if len(records) >= MAX_RECORDS:
+                    break
+            except:
+                continue
+        result = import_records(records)
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+    except Exception as e:
+        print(json.dumps({"imported":0,"skipped":0,"errors":[str(e)]}))
+        return 1
 
 def import_json_file(path):
     try:
-        text = Path(path).read_text(encoding="utf-8", errors="ignore")
+        p = Path(path)
+        if p.is_symlink():
+            print(json.dumps({"imported":0,"skipped":0,"errors":["refusing symlink"]}))
+            return 1
+        st = p.lstat()
+        if st.st_size > MAX_JSON_BYTES:
+            print(json.dumps({"imported":0,"skipped":0,"errors":["file too large"]}))
+            return 1
+        text = safe_read_text_limited(p, MAX_JSON_BYTES)
         data = json.loads(text)
         if isinstance(data, dict):
-            # Single object or {servers: [...]}
             if "servers" in data and isinstance(data["servers"], list):
                 records = data["servers"]
             else:
@@ -314,22 +436,18 @@ def import_json_file(path):
         else:
             print(json.dumps({"imported":0,"skipped":0,"errors":["invalid JSON format"]}))
             return 1
-        # Normalize keys to lower
+        if len(records) > MAX_RECORDS:
+            records = records[:MAX_RECORDS]
         normed=[]
         for rec in records:
             if not isinstance(rec, dict):
                 continue
-            norm = { (k or "").strip().lower(): (v if isinstance(v,str) else str(v) if v is not None else "") for k,v in rec.items() }
-            normed.append({
-                "name": norm.get("name") or norm.get("nom") or "",
-                "host": norm.get("host") or norm.get("ip") or norm.get("server") or norm.get("hostname") or "",
-                "protocol": norm.get("protocol") or norm.get("proto") or "",
-                "port": norm.get("port") or "",
-                "username": norm.get("username") or norm.get("user") or "",
-                "domain": norm.get("domain") or "",
-                "group": norm.get("group") or "",
-                "notes": norm.get("notes") or "",
-            })
+            if len(str(rec)) > 2048:
+                continue
+            norm = { (k or "").strip().lower(): (v if isinstance(v,str) else str(v) if v is not None else "")[:MAX_FIELD_LEN] for k,v in rec.items() }
+            normed.append({"name": norm.get("name") or norm.get("nom") or "","host": norm.get("host") or norm.get("ip") or norm.get("server") or norm.get("hostname") or "","protocol": norm.get("protocol") or norm.get("proto") or "","port": norm.get("port") or "","username": norm.get("username") or norm.get("user") or "","domain": norm.get("domain") or "","group": norm.get("group") or "","notes": norm.get("notes") or ""})
+            if len(normed) >= MAX_RECORDS:
+                break
         result = import_records(normed)
         print(json.dumps(result, ensure_ascii=False))
         return 0
@@ -342,6 +460,7 @@ def usage():
     print("CSV header expected: name,host,protocol,port,username,domain,group,notes", file=sys.stderr)
     print("TXT line: name;host;protocol;port;username;domain;group", file=sys.stderr)
     print("JSON: array of {name,host,protocol,port,username,domain,group,notes}", file=sys.stderr)
+    print("Limits: file 2MiB, 10000 lines, 1000 records, field 256 chars", file=sys.stderr)
 
 if __name__=="__main__":
     if len(sys.argv)<2:

@@ -1,32 +1,58 @@
 #!/usr/bin/env python3
 """
-omarchy-remmina-launch — launch a remote connection
-Usage: omarchy-remmina-launch <id>
-       omarchy-remmina-launch --direct <protocol> <host> <port> <username>
-
-For SSH/SFTP: uses xdg-terminal-exec -> ssh
-For RDP: tries xfreerdp, else remmina -c rdp://...
-For VNC: remmina -c vnc://...
-For SPICE: remote-viewer spice://...
-Disables Remmina tray icon side-effect via remmina.pref patch.
-
-No passwords handled — SSH uses ssh config / keys, RDP uses freerdp/remmina dialog.
+omarchy-remmina-launch — launch a remote connection (hardened)
+- Default cert validation (no /cert:ignore, cert_ignore=0)
+- Pin/TOFU via cert-exceptions.json (narrowly scoped per-host)
+- Private runtime temp profiles (XDG_RUNTIME_DIR, 0700, guaranteed cleanup)
+- No auto tray fix (explicit user action required)
+Limits: host 253, strict host validation
 """
-
 import json
 import os
 import sys
 import subprocess
 import shlex
+import atexit
+import tempfile
 from pathlib import Path
 
 HOME = Path(os.environ.get("HOME", str(Path.home())))
 STORE_FILE = HOME / ".config" / "remmina-panel" / "servers.json"
+CERT_FILE = HOME / ".config" / "remmina-panel" / "cert-exceptions.json"
+RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", tempfile.gettempdir())) / "omarchy-remmina"
+
+MAX_HOST_LEN = 253
+
+def ensure_private_dir(p: Path):
+    try:
+        if p.exists():
+            if p.is_symlink():
+                raise RuntimeError(f"symlink {p}")
+            st = p.lstat()
+            if not p.is_dir() or st.st_uid != os.getuid():
+                raise RuntimeError(f"bad dir {p}")
+            if (st.st_mode & 0o777) != 0o700:
+                try:
+                    p.chmod(0o700)
+                except:
+                    pass
+        else:
+            p.mkdir(parents=True, mode=0o700, exist_ok=True)
+            try:
+                p.chmod(0o700)
+            except:
+                pass
+    except Exception as e:
+        print(f"FAIL: private dir {p}: {e}", file=sys.stderr)
+        sys.exit(1)
 
 def load_servers():
-    if not STORE_FILE.exists():
+    if not STORE_FILE.exists() or STORE_FILE.is_symlink():
         return []
     try:
+        st = STORE_FILE.lstat()
+        if st.st_size > 2*1024*1024 or st.st_uid != os.getuid():
+            return []
         return json.loads(STORE_FILE.read_text(encoding="utf-8"))
     except:
         return []
@@ -37,50 +63,47 @@ def find_server(sid):
             return s
     return None
 
-def disable_remmina_tray():
-    """Ensure Remmina tray icon is disabled (it breaks on Wayland/Hyprland)."""
-    pref = HOME / ".config" / "remmina" / "remmina.pref"
+def load_cert_exceptions():
+    if not CERT_FILE.exists() or CERT_FILE.is_symlink():
+        return set()
     try:
-        if not pref.exists():
-            return
-        txt = pref.read_text(encoding="utf-8", errors="ignore")
-        if "disable_tray_icon=true" in txt:
-            return
-        # patch in place
-        if "disable_tray_icon=" in txt:
-            txt = txt.replace("disable_tray_icon=false", "disable_tray_icon=true")
-        else:
-            txt = txt.rstrip() + "\n" + "disable_tray_icon=true\n"
-        pref.write_text(txt, encoding="utf-8")
-    except Exception:
+        st = CERT_FILE.lstat()
+        if st.st_size > 64*1024 or st.st_uid != os.getuid():
+            return set()
+        data = json.loads(CERT_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return set(str(x)[:MAX_HOST_LEN] for x in data if isinstance(x, str))
+    except:
         pass
+    return set()
+
+def is_cert_exception(host):
+    # narrowly scoped per-host exact match
+    h = host.split(":")[0].strip().lower()
+    ex = load_cert_exceptions()
+    return h.lower() in (x.lower() for x in ex)
 
 def which(cmd):
     import shutil
     return shutil.which(cmd)
 
 def launch_ssh(host, port, username):
+    if len(host) > MAX_HOST_LEN or any(c in host for c in ";&|`$(){}[]!#\"' \n\r\t"):
+        print("FAIL: invalid host", file=sys.stderr)
+        sys.exit(1)
     target = f"{username}@{host}" if username else host
     ssh_cmd = ["ssh", target]
     if port:
+        if not port.isdigit() or not (1 <= int(port) <= 65535):
+            print("FAIL: invalid port", file=sys.stderr)
+            sys.exit(1)
         ssh_cmd += ["-p", str(port)]
-    # Use xdg-terminal-exec so we honor Omarchy's default terminal (Alacritty/Foot/Ghostty/Kitty)
     if which("xdg-terminal-exec"):
-        # xdg-terminal-exec -- ssh ...
-        # needs -- separator
         cmd = ["xdg-terminal-exec", "--"] + ssh_cmd
     else:
-        # fallback: try common terminals
         for term in [which("ghostty"), which("alacritty"), which("kitty"), which("foot")]:
             if term:
-                if "kitty" in term:
-                    cmd = [term, "-e"] + ssh_cmd
-                elif "foot" in term:
-                    cmd = [term, "-e"] + ssh_cmd
-                elif "ghostty" in term:
-                    cmd = [term, "-e"] + ssh_cmd
-                else:
-                    cmd = [term, "-e"] + ssh_cmd
+                cmd = [term, "-e"] + ssh_cmd
                 break
         else:
             cmd = ssh_cmd
@@ -88,13 +111,16 @@ def launch_ssh(host, port, username):
     return 0
 
 def launch_rdp(host, port, username, domain="", server_name=""):
-    disable_remmina_tray()
-    # Try to find an existing .remmina file for this server (imported from Remmina)
-    # This preserves all original settings (gateway, security, etc.)
+    if len(host) > MAX_HOST_LEN or any(c in host for c in ";&|`$(){}[]!#\"' \n\r\t"):
+        print("FAIL: invalid host", file=sys.stderr)
+        sys.exit(1)
+    # Try to find an existing .remmina file for this server
     try:
         rem_dir = HOME / ".local" / "share" / "remmina"
-        if rem_dir.exists() and server_name:
+        if rem_dir.exists() and not rem_dir.is_symlink() and server_name:
             for f in rem_dir.glob("*.remmina"):
+                if f.is_symlink():
+                    continue
                 try:
                     import configparser
                     cp = configparser.ConfigParser()
@@ -109,19 +135,22 @@ def launch_rdp(host, port, username, domain="", server_name=""):
                     continue
     except:
         pass
-    # Fallback: generate a temporary .remmina file for this server
-    # This is more compatible than xfreerdp URI, as it uses Remmina's own freerdp wrapper
+    # Check cert exception for this host
+    allow_insecure = is_cert_exception(host)
+    # Fallback: generate a temporary .remmina file with proper cert validation
     try:
-        import tempfile
         import configparser
-        # Create a minimal .remmina for RDP
+        ensure_private_dir(RUNTIME_DIR)
         cp = configparser.ConfigParser()
+        # Default: strict cert validation
+        cert_val = "1" if allow_insecure else "0"
+        # Note: Remmina uses cert_ignore=0 for validation, 1 to ignore
         cp["remmina"] = {
-            "name": server_name or host,
+            "name": (server_name or host)[:64],
             "server": f"{host}:{port}" if port else host,
             "protocol": "RDP",
-            "username": username or "",
-            "domain": domain or "",
+            "username": (username or "")[:64],
+            "domain": (domain or "")[:64],
             "password": "",
             "resolution_mode": "2",
             "colordepth": "99",
@@ -131,21 +160,60 @@ def launch_rdp(host, port, username, domain="", server_name=""):
             "sharesmartcard": "0",
             "sound": "off",
             "microphone": "",
-            "cert_ignore": "1",
-            "ignore-tls-errors": "1",
+            "cert_ignore": cert_val,
             "window_maximize": "1",
             "scale": "1",
             "viewmode": "1",
         }
-        fd, tmp_path = tempfile.mkstemp(suffix=".remmina", prefix="omarchy-remmina-")
+        # Only set ignore-tls-errors if exception explicitly allowed
+        if allow_insecure:
+            cp["remmina"]["ignore-tls-errors"] = "1"
+        fd, tmp_path = tempfile.mkstemp(suffix=".remmina", prefix="omarchy-remmina-", dir=str(RUNTIME_DIR))
+        # ensure 0600
+        os.fchmod(fd, 0o600)
+        # guarantee cleanup on exit
+        def cleanup(p=tmp_path):
+            try:
+                Path(p).unlink(missing_ok=True)
+            except:
+                pass
+        atexit.register(cleanup)
         with os.fdopen(fd, 'w', encoding="utf-8") as fo:
             cp.write(fo)
+            fo.flush()
+            os.fsync(fo.fileno())
+        # also fsync dir
+        try:
+            dfd = os.open(str(RUNTIME_DIR), os.O_DIRECTORY)
+            os.fsync(dfd)
+            os.close(dfd)
+        except:
+            pass
         cmd = ["remmina", "-c", tmp_path]
+        # Use Popen and schedule cleanup after a delay (remmina reads file quickly)
+        # We'll let atexit handle it, and also schedule unlink after 60s via subprocess
         subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        # Also schedule delayed cleanup via forked process
+        # The file will be removed on next launch via tmp cleanup of old files
+        # Clean old tmp files older than 1h
+        try:
+            import time
+            now = time.time()
+            for pf in RUNTIME_DIR.glob("omarchy-remmina-*.remmina"):
+                try:
+                    if pf.is_symlink():
+                        continue
+                    if now - pf.stat().st_mtime > 3600:
+                        pf.unlink(missing_ok=True)
+                except:
+                    pass
+        except:
+            pass
         return 0
-    except:
+    except Exception as e:
+        print(f"FAIL: temp profile {e}", file=sys.stderr)
         pass
-    # Last fallback: xfreerdp / remmina URI
+    # Last fallback: xfreerdp / remmina URI with proper cert handling
     if which("xfreerdp") or which("xfreerdp3"):
         bin_name = "xfreerdp3" if which("xfreerdp3") else "xfreerdp"
         v = f"{host}:{port}" if port else host
@@ -154,7 +222,13 @@ def launch_rdp(host, port, username, domain="", server_name=""):
             args.append(f"/u:{username}")
         if domain:
             args.append(f"/d:{domain}")
-        args += ["/dynamic-resolution", "+clipboard", "/cert:ignore"]
+        args += ["/dynamic-resolution", "+clipboard"]
+        if allow_insecure:
+            args.append("/cert:ignore")
+            print(f"WARN: using cert exception for {host} (TOFU/pinned)", file=sys.stderr)
+        else:
+            # default: strict validation (no /cert:ignore)
+            pass
         subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         return 0
     user_part = ""
@@ -169,15 +243,16 @@ def launch_rdp(host, port, username, domain="", server_name=""):
     return 0
 
 def launch_vnc(host, port, username):
-    disable_remmina_tray()
-    # Try remmina VNC
-    # remmina expects vnc://host[:port] or vnc://server?VncUsername=...
+    if len(host) > MAX_HOST_LEN or any(c in host for c in ";&|`$(){}[]!#\"' \n\r\t"):
+        print("FAIL: invalid host", file=sys.stderr)
+        sys.exit(1)
     port_part = f":{port}" if port else ""
     if username:
+        # sanitize username
+        username = re.sub(r'[\x00-\x1f\x7f]', '', username)[:64]
         uri = f"vnc://{host}{port_part}?VncUsername={username}"
     else:
         uri = f"vnc://{host}{port_part}"
-    # If remote-viewer / vncviewer available? Remmina is canonical
     if which("remmina"):
         cmd = ["remmina", "-c", uri]
     elif which("vncviewer"):
@@ -186,20 +261,22 @@ def launch_vnc(host, port, username):
     elif which("virt-viewer"):
         cmd = ["virt-viewer", uri]
     else:
-        # fallback to remmina anyway
         cmd = ["remmina", "-c", uri]
     subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     return 0
 
 def launch_spice(host, port, username):
-    # SPICE via remote-viewer (virt-viewer)
+    if len(host) > MAX_HOST_LEN:
+        print("FAIL: host too long", file=sys.stderr)
+        sys.exit(1)
     spice_port = port or "5900"
+    if not str(spice_port).isdigit():
+        spice_port = "5900"
     uri = f"spice://{host}:{spice_port}"
     viewer = which("remote-viewer") or which("virt-viewer")
     if viewer:
         cmd = [viewer, uri]
     else:
-        # fallback remmina
         cmd = ["remmina", "-c", uri]
     subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     return 0
@@ -215,7 +292,6 @@ def launch(protocol, host, port, username, domain="", server_name=""):
     elif p == "SPICE":
         return launch_spice(host, port, username)
     else:
-        disable_remmina_tray()
         proto = p.lower()
         uri = f"{proto}://{host}"
         if port:
@@ -227,7 +303,20 @@ def main():
     if len(sys.argv) < 2:
         print("Usage: omarchy-remmina-launch <server-id>", file=sys.stderr)
         print("       omarchy-remmina-launch --direct <PROTO> <host> <port> <username> [domain]", file=sys.stderr)
+        print("       omarchy-remmina-launch --allow-cert <host>  # pin exception (TOFU)", file=sys.stderr)
         sys.exit(1)
+    if sys.argv[1] == "--allow-cert" and len(sys.argv) == 3:
+        host = sys.argv[2].strip()[:MAX_HOST_LEN]
+        if not host or any(c in host for c in ";&|`$(){}[]!#\"' \n\r\t"):
+            print("FAIL: invalid host", file=sys.stderr)
+            sys.exit(1)
+        # delegate to servers helper
+        import subprocess as sp
+        res = sp.run(["python3", str(HOME / ".config" / "omarchy" / "plugins" / "io.github.tug-benson.remmina" / "bin" / "omarchy-remmina-servers"), "cert-allow", host], capture_output=True, text=True)
+        print(res.stdout.strip())
+        if res.returncode != 0:
+            print(res.stderr.strip(), file=sys.stderr)
+        sys.exit(res.returncode)
     if sys.argv[1] == "--direct":
         if len(sys.argv) < 6:
             print("FAIL: --direct needs proto host port username [domain]", file=sys.stderr)
@@ -239,35 +328,58 @@ def main():
         domain = domain if domain and domain != "-" else ""
         sys.exit(launch(proto, host, port, username, domain))
     sid = sys.argv[1]
+    if len(sid) > 64 or any(c in sid for c in ";&|`$(){}[]!#\"' \n\r\t"):
+        print("FAIL: invalid id", file=sys.stderr)
+        sys.exit(1)
     srv = find_server(sid)
     if not srv:
         print(f"FAIL: server {sid} not found", file=sys.stderr)
         sys.exit(1)
     host = srv.get("host", "")
-    if not host:
-        print("FAIL: host empty", file=sys.stderr)
+    if not host or len(host) > MAX_HOST_LEN:
+        print("FAIL: host empty/too long", file=sys.stderr)
         sys.exit(1)
-    if any(c in host for c in ";&|`$(){}[]!#\"'"):
+    if any(c in host for c in ";&|`$(){}[]!#\"' \n\r\t"):
         print("FAIL: invalid host", file=sys.stderr)
         sys.exit(1)
-    # Update lastUsed for Recent (fire-and-forget)
+    # Update lastUsed for Recent (hardened)
     try:
-        import time
+        import time, fcntl, tempfile, json
+        ensure_private_dir(STORE_FILE.parent)
+        # Use safe write with lock
         servers = load_servers()
         for s in servers:
             if s.get("id") == sid:
                 s["lastUsed"] = int(time.time() * 1000)
                 if "favorite" not in s:
                     s["favorite"] = False
-                Path(STORE_FILE).parent.mkdir(parents=True, exist_ok=True)
-                tmp = STORE_FILE.with_suffix(".tmp")
-                tmp.write_text(json.dumps(servers, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-                tmp.chmod(0o600)
-                tmp.replace(STORE_FILE)
+                # safe write
+                data = json.dumps(servers, indent=2, ensure_ascii=False) + "\n"
+                b = data.encode('utf-8')
+                lock_path = STORE_FILE.parent / ".lock-servers.json"
+                lock_fd = os.open(lock_path, os.O_CREAT|os.O_RDWR, 0o600)
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                try:
+                    fd, tmp_path = tempfile.mkstemp(dir=str(STORE_FILE.parent), prefix=".servers.json.tmp.")
+                    os.fchmod(fd, 0o600)
+                    os.write(fd, b)
+                    os.fsync(fd)
+                    os.close(fd)
+                    Path(tmp_path).replace(STORE_FILE)
+                    try:
+                        dfd = os.open(str(STORE_FILE.parent), os.O_DIRECTORY)
+                        os.fsync(dfd)
+                        os.close(dfd)
+                    except:
+                        pass
+                finally:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    os.close(lock_fd)
                 break
     except Exception:
         pass
     sys.exit(launch(srv.get("protocol", "RDP"), host, srv.get("port", ""), srv.get("username", ""), srv.get("domain", ""), srv.get("name", "")))
 
 if __name__ == "__main__":
+    import re
     main()

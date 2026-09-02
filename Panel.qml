@@ -355,6 +355,25 @@ Panel {
                         text: service ? service.lastImport : ""
                         font.family: fontFam; font.pixelSize: capSize; color: cAccent; opacity: 0.9; wrapMode: Text.Wrap
                     }
+                    // tray fix prompt (explicit user action, backup, atomic)
+                    Rectangle {
+                        Layout.fillWidth: true
+                        visible: service && service.lastError && service.lastError.indexOf("Remmina tray") !== -1
+                        radius: Style.space(6)
+                        color: Util.alpha(cUrgent, 0.12)
+                        border.color: Util.alpha(cUrgent, 0.35)
+                        border.width: 1
+                        implicitHeight: trayFixRow.implicitHeight + Style.space(12)
+                        RowLayout {
+                            id: trayFixRow
+                            anchors.fill: parent
+                            anchors.margins: Style.space(8)
+                            spacing: Style.space(8)
+                            Label { Layout.fillWidth: true; textFormat: Text.PlainText; text: "Remmina tray icon is enabled (breaks on Hyprland). Fix creates backup & atomic replace."; font.family: fontFam; font.pixelSize: capSize; color: cUrgent; wrapMode: Text.Wrap }
+                            Button { text: "Fix"; fontSize: capSize; Layout.preferredWidth: Style.space(50); onClicked: if (service) service.fixTray() }
+                            Button { text: "Check"; fontSize: capSize; Layout.preferredWidth: Style.space(50); onClicked: if (service) service.checkTray() }
+                        }
+                    }
 
                     // separator
                     Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Qt.rgba(1,1,1,0.08) }

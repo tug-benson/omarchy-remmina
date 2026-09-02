@@ -1,20 +1,153 @@
 #!/usr/bin/env bash
-# omarchy-remmina-tray-fix — disable Remmina tray icon (broken on Omarchy/Hyprland)
-# Idempotent; patches ~/.config/remmina/remmina.pref
-
+# omarchy-remmina-tray-fix — disable Remmina tray icon (hardened)
+# Requires explicit user action, creates backup, checks symlink/type/owner, atomic replace, rollback on failure
+# Usage: omarchy-remmina-tray-fix [--check|--fix|--rollback]
 set -euo pipefail
+
 PREF="$HOME/.config/remmina/remmina.pref"
-if [[ ! -f "$PREF" ]]; then
-  echo "no pref file at $PREF — Remmina never launched, nothing to do"
-  exit 0
-fi
-if grep -q "^disable_tray_icon=true" "$PREF"; then
-  echo "already disabled"
-  exit 0
-fi
-if grep -q "^disable_tray_icon=" "$PREF"; then
-  sed -i 's/^disable_tray_icon=.*/disable_tray_icon=true/' "$PREF"
-else
-  echo "disable_tray_icon=true" >> "$PREF"
-fi
-echo "Remmina tray icon disabled"
+LOCKDIR="$HOME/.config/remmina"
+
+# Ensure parent is private
+ensure_private_parent() {
+    local dir
+    dir="$(dirname "$PREF")"
+    if [[ -e "$dir" ]]; then
+        if [[ -L "$dir" ]]; then
+            echo "FAIL: refusing symlink dir $dir" >&2
+            exit 1
+        fi
+        if [[ ! -d "$dir" ]]; then
+            echo "FAIL: not a directory $dir" >&2
+            exit 1
+        fi
+        # check owner
+        local owner
+        owner="$(stat -c %u "$dir" 2>/dev/null || echo "")"
+        if [[ -n "$owner" && "$owner" != "$(id -u)" ]]; then
+            echo "FAIL: wrong owner $dir" >&2
+            exit 1
+        fi
+        chmod 700 "$dir" 2>/dev/null || true
+    else
+        mkdir -p -m 700 "$dir"
+        chmod 700 "$dir" 2>/dev/null || true
+    fi
+}
+
+do_check() {
+    if [[ ! -e "$PREF" ]]; then
+        echo "no pref file at $PREF — Remmina never launched"
+        exit 0
+    fi
+    if [[ -L "$PREF" ]]; then
+        echo "FAIL: refusing symlink $PREF" >&2
+        exit 1
+    fi
+    if [[ ! -f "$PREF" ]]; then
+        echo "FAIL: not a regular file $PREF" >&2
+        exit 1
+    fi
+    local st_uid
+    st_uid="$(stat -c %u "$PREF" 2>/dev/null || echo "")"
+    if [[ -n "$st_uid" && "$st_uid" != "$(id -u)" ]]; then
+        echo "FAIL: wrong owner $PREF" >&2
+        exit 1
+    fi
+    if grep -q "^disable_tray_icon=true" "$PREF" 2>/dev/null; then
+        echo "already disabled"
+    else
+        echo "needs fix (disable_tray_icon != true)"
+    fi
+}
+
+do_fix() {
+    ensure_private_parent
+    if [[ ! -f "$PREF" ]]; then
+        echo "no pref file at $PREF — nothing to do"
+        exit 0
+    fi
+    if [[ -L "$PREF" ]]; then
+        echo "FAIL: refusing symlink $PREF" >&2
+        exit 1
+    fi
+    if [[ ! -f "$PREF" ]]; then
+        echo "FAIL: not a regular file" >&2
+        exit 1
+    fi
+    local st_uid
+    st_uid="$(stat -c %u "$PREF" 2>/dev/null || echo "")"
+    if [[ -n "$st_uid" && "$st_uid" != "$(id -u)" ]]; then
+        echo "FAIL: wrong owner" >&2
+        exit 1
+    fi
+    if grep -q "^disable_tray_icon=true" "$PREF" 2>/dev/null; then
+        echo "already disabled"
+        exit 0
+    fi
+    # Create backup with timestamp
+    local bak="${PREF}.bak.$(date +%Y%m%d%H%M%S)"
+    cp -a -- "$PREF" "$bak" 2>/dev/null || cp -- "$PREF" "$bak"
+    chmod 600 "$bak" 2>/dev/null || true
+    echo "backup created at $bak"
+    # Create temp in same dir, exclusive, 0600, no follow
+    local tmp
+    tmp="$(mktemp -p "$(dirname "$PREF")" ".remmina.pref.tmp.XXXXXX")"
+    chmod 600 "$tmp"
+    # Ensure tmp is not symlink
+    if [[ -L "$tmp" ]]; then
+        rm -f "$tmp"
+        echo "FAIL: tmp is symlink" >&2
+        exit 1
+    fi
+    # Build new content with bounded size (max 1MiB)
+    local size
+    size="$(stat -c %s "$PREF" 2>/dev/null || echo 0)"
+    if [[ "$size" -gt 1048576 ]]; then
+        rm -f "$tmp"
+        echo "FAIL: pref too large" >&2
+        exit 1
+    fi
+    # Patch
+    if grep -q "^disable_tray_icon=" "$PREF" 2>/dev/null; then
+        sed 's/^disable_tray_icon=.*/disable_tray_icon=true/' "$PREF" > "$tmp"
+    else
+        cat "$PREF" > "$tmp"
+        # ensure newline
+        echo "" >> "$tmp"
+        echo "disable_tray_icon=true" >> "$tmp"
+    fi
+    # fsync tmp
+    sync 2>/dev/null || true
+    # atomic replace
+    mv -f -- "$tmp" "$PREF"
+    chmod 600 "$PREF" 2>/dev/null || true
+    # fsync dir
+    local dir
+    dir="$(dirname "$PREF")"
+    # try to fsync dir via python
+    python3 -c "import os; dfd=os.open('$dir', os.O_DIRECTORY); os.fsync(dfd); os.close(dfd)" 2>/dev/null || true
+    echo "Remmina tray icon disabled (backup at $bak, rollback: cp $bak $PREF)"
+}
+
+do_rollback() {
+    local bak
+    bak="$(ls -t "${PREF}.bak."* 2>/dev/null | head -n1 || true)"
+    if [[ -z "$bak" ]]; then
+        echo "FAIL: no backup found" >&2
+        exit 1
+    fi
+    if [[ -L "$bak" || ! -f "$bak" ]]; then
+        echo "FAIL: bad backup" >&2
+        exit 1
+    fi
+    cp -a -- "$bak" "$PREF"
+    chmod 600 "$PREF"
+    echo "rolled back from $bak"
+}
+
+case "${1:-fix}" in
+    --check|check) do_check ;;
+    --fix|fix) do_fix ;;
+    --rollback|rollback) do_rollback ;;
+    *) echo "Usage: $0 [--check|--fix|--rollback]" >&2; exit 1 ;;
+esac
