@@ -56,11 +56,12 @@ def safe_read_text_limited(path: Path, max_bytes=MAX_FILE_BYTES):
     if path.is_symlink():
         raise RuntimeError(f"refusing symlink {path}")
     st = path.lstat()
+    if not path.is_file():
+        raise RuntimeError(f"not a regular file {path}")
+    if st.st_uid != os.getuid():
+        raise RuntimeError(f"wrong owner {path}")
     if st.st_size > max_bytes:
         raise RuntimeError(f"file too large {st.st_size} > {max_bytes}")
-    if st.st_uid != os.getuid():
-        # allow reading ssh config even if different owner? but require same user for imports
-        pass
     # check parent not symlink for our store, but for input files allow
     data = path.read_bytes()
     if len(data) > max_bytes:
@@ -290,11 +291,21 @@ def import_ssh():
             print(json.dumps({"imported":0,"skipped":0,"errors":["~/.ssh/config not found"]}))
             return 0
         if cfg.is_symlink():
-            # allow symlink for ssh config? but check owner
-            pass
+            print(json.dumps({"imported":0,"skipped":0,"errors":["refusing symlink ~/.ssh/config"]}))
+            return 1
         st = cfg.lstat()
+        if not cfg.is_file():
+            print(json.dumps({"imported":0,"skipped":0,"errors":["not a regular file ~/.ssh/config"]}))
+            return 1
+        if st.st_uid != os.getuid():
+            print(json.dumps({"imported":0,"skipped":0,"errors":["wrong owner ~/.ssh/config"]}))
+            return 1
         if st.st_size > MAX_FILE_BYTES:
             print(json.dumps({"imported":0,"skipped":0,"errors":["ssh config too large"]}))
+            return 1
+        # also verify parent dir not symlink
+        if cfg.parent.is_symlink():
+            print(json.dumps({"imported":0,"skipped":0,"errors":["refusing symlink parent ~/.ssh"]}))
             return 1
         text = cfg.read_text(encoding="utf-8", errors="ignore")
         if len(text.encode('utf-8')) > MAX_FILE_BYTES:

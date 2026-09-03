@@ -358,7 +358,7 @@ Panel {
                     // tray fix prompt (explicit user action, backup, atomic)
                     Rectangle {
                         Layout.fillWidth: true
-                        visible: service && service.lastError && service.lastError.indexOf("Remmina tray") !== -1
+                        visible: service && service.lastError && (service.lastError.indexOf("Remmina tray") !== -1 || service.lastError.indexOf("needs fix") !== -1 || service.lastError.indexOf("disable_tray") !== -1)
                         radius: Style.space(6)
                         color: Util.alpha(cUrgent, 0.12)
                         border.color: Util.alpha(cUrgent, 0.35)
@@ -1042,7 +1042,7 @@ Panel {
                         Layout.fillWidth: true
                         wrapMode: Text.Wrap
                         textFormat: Text.PlainText
-                        text: "SSH launches in your default Omarchy terminal (xdg-terminal-exec). RDP via freerdp/remmina, VNC/SPICE via remmina/virt-viewer. Remmina tray icon is auto-disabled."
+                        text: "SSH launches in your default Omarchy terminal (xdg-terminal-exec). RDP via freerdp/remmina, VNC/SPICE via remmina/virt-viewer. Remmina tray fix is explicit (Fix/Check, backup + atomic)."
                         font.family: fontFam; font.pixelSize: capSize-1; color: cMuted; opacity: 0.45
                     }
                 }

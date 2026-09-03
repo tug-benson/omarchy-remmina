@@ -126,7 +126,7 @@ omarchy-remmina/
 - No network calls — all data stays local.
 - No personal data is committed to the public repo (see `.gitignore`).
 - All `Process` invocations use `python3` vector args or `bash -lc` with single-quoted JSON via env var — no shell injection from server fields. **Hardened:** hard deadlines (8s list/groups, 10s CRUD/launch, 30s import, 60s zenity), producer-side limits (stdin 64 KiB, file 2 MiB, 10k lines, 1k records, 256-char fields, 2k servers, 500 groups, output 256 KiB/8 KiB), process-group cleanup via `running=false` + `Timer`.
-- Temporary Remmina profiles use private runtime `$XDG_RUNTIME_DIR/omarchy-remmina` (`0700`, `0600` files, `atexit` + 1h delayed cleanup, old-tmp purge).
+- Temporary Remmina profiles use private runtime `$XDG_RUNTIME_DIR/omarchy-remmina` (`0700`, `0600` files, delayed `sleep 60; rm -f` + 1h stale purge, tmpfs cleared on reboot — no immediate `atexit` race).
 - Imports (CSV/TXT/JSON/SSH/Remmina/stdin) enforce file-byte, line, record, field, collection limits as above; Remmina source files verified no-symlink/regular file/owner/size.
 - State writes verify private parents, no-symlink, owner, `flock`, exclusive `mkstemp`, `fsync` file+dir, atomic replace.
 

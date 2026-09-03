@@ -171,13 +171,6 @@ def launch_rdp(host, port, username, domain="", server_name=""):
         fd, tmp_path = tempfile.mkstemp(suffix=".remmina", prefix="omarchy-remmina-", dir=str(RUNTIME_DIR))
         # ensure 0600
         os.fchmod(fd, 0o600)
-        # guarantee cleanup on exit
-        def cleanup(p=tmp_path):
-            try:
-                Path(p).unlink(missing_ok=True)
-            except:
-                pass
-        atexit.register(cleanup)
         with os.fdopen(fd, 'w', encoding="utf-8") as fo:
             cp.write(fo)
             fo.flush()
@@ -189,19 +182,29 @@ def launch_rdp(host, port, username, domain="", server_name=""):
             os.close(dfd)
         except:
             pass
+        # schedule guaranteed cleanup: delayed background unlink (60s) so Remmina
+        # has time to read, plus hourly purge of stale files. RUNTIME_DIR is
+        # tmpfs (XDG_RUNTIME_DIR) so reboot also clears it. No immediate
+        # atexit unlink — that would race against Remmina's read.
+        try:
+            subprocess.Popen(
+                ["bash", "-c", f"sleep 60; rm -f -- {shlex.quote(tmp_path)}"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except:
+            pass
         cmd = ["remmina", "-c", tmp_path]
-        # Use Popen and schedule cleanup after a delay (remmina reads file quickly)
-        # We'll let atexit handle it, and also schedule unlink after 60s via subprocess
         subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-        # Also schedule delayed cleanup via forked process
-        # The file will be removed on next launch via tmp cleanup of old files
-        # Clean old tmp files older than 1h
+        # Clean old tmp files older than 1h (guaranteed cleanup)
         try:
             import time
             now = time.time()
             for pf in RUNTIME_DIR.glob("omarchy-remmina-*.remmina"):
                 try:
                     if pf.is_symlink():
+                        continue
+                    if pf.samefile(Path(tmp_path)):
                         continue
                     if now - pf.stat().st_mtime > 3600:
                         pf.unlink(missing_ok=True)
