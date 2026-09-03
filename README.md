@@ -66,7 +66,7 @@ omarchy pkg add openssh        # SSH
 3. `＋ Add Server` — fill `Name`, `Host` (IP or FQDN), `Protocol`, `Port`, `Username`, `Group`, then Add.
 4. Click the connect button on a row to connect:
    - **SSH** → `xdg-terminal-exec -- ssh [user@]host [-p port]` (uses your SSH config / keys; configure `~/.ssh/config` first).
-   - **RDP** → strict cert validation by default; `xfreerdp /v:host:port /u:user /d:domain +clipboard /dynamic-resolution` if `freerdp` present, otherwise `remmina -c rdp://user@host:port` or temporary `*.remmina` (`cert_ignore=0`, `0700` runtime, `atexit` cleanup). For self-signed/host-pinned certs, explicitly allow per-host via `omarchy-remmina-servers cert-allow <host>` or `omarchy-remmina-launch --allow-cert <host>` (narrow TOFU, stored in `cert-exceptions.json` 0600, checked before adding `/cert:ignore` or `cert_ignore=1`).
+   - **RDP** → strict cert validation by default; `xfreerdp /v:host:port /u:user /d:domain +clipboard /dynamic-resolution` if `freerdp` present, otherwise `remmina -c rdp://user@host:port` or temporary `*.remmina` (`cert_ignore=0`, `0700` runtime, delayed `sleep 60; rm -f` + 1h purge, no immediate `atexit` race). For self-signed/host-pinned certs, explicitly allow per-host via `omarchy-remmina-servers cert-allow <host>` or `omarchy-remmina-launch --allow-cert <host>` (narrow TOFU, stored in `cert-exceptions.json` 0600, max 500, checked before adding `/cert:ignore` or `cert_ignore=1`).
    - **VNC** → `remmina -c vnc://host:port` (or `vncviewer`/`virt-viewer`).
    - **SPICE** → `remote-viewer spice://host:port` or `remmina -c spice://...`.
 5. Use the import buttons:
@@ -125,10 +125,21 @@ omarchy-remmina/
 - No passwords or private keys are ever written to disk by this plugin. Only `name`, `host`, `protocol`, `port`, `username`, `domain`, `group`, `notes` are stored in `~/.config/remmina-panel/servers.json` (`0600`, parent `0700`, `flock` + `mkstemp` same-dir `0600` + `fsync` + atomic `replace` + dir `fsync`). `groups.json`/`cert-exceptions.json` same hardening.
 - No network calls — all data stays local.
 - No personal data is committed to the public repo (see `.gitignore`).
-- All `Process` invocations use `python3` vector args or `bash -lc` with single-quoted JSON via env var — no shell injection from server fields. **Hardened:** hard deadlines (8s list/groups, 10s CRUD/launch, 30s import, 60s zenity), producer-side limits (stdin 64 KiB, file 2 MiB, 10k lines, 1k records, 256-char fields, 2k servers, 500 groups, output 256 KiB/8 KiB), process-group cleanup via `running=false` + `Timer`.
+- All `Process` invocations use `python3` vector args or `bash -lc` with single-quoted JSON via env var — no shell injection from server fields. **Hardened:** hard deadlines (8s list/groups, 10s CRUD/launch, 30s import, 60s zenity), producer-side limits (stdin 64 KiB, file 2 MiB, 10k lines, 1k records, 256-char fields, 2k servers, 500 groups, output 256 KiB/8 KiB, path 1024), process-group cleanup via `running=false` + `Timer`.
 - Temporary Remmina profiles use private runtime `$XDG_RUNTIME_DIR/omarchy-remmina` (`0700`, `0600` files, delayed `sleep 60; rm -f` + 1h stale purge, tmpfs cleared on reboot — no immediate `atexit` race).
 - Imports (CSV/TXT/JSON/SSH/Remmina/stdin) enforce file-byte, line, record, field, collection limits as above; Remmina source files verified no-symlink/regular file/owner/size.
 - State writes verify private parents, no-symlink, owner, `flock`, exclusive `mkstemp`, `fsync` file+dir, atomic replace.
+- **Manual dependencies only** — the plugin never runs `pacman`/`yay`/`omarchy pkg add` automatically; code only checks via `shutil.which` and README `Dependencies` lists `remmina/freerdp/zenity/virt-viewer/openssh` as manual installs.
+
+### Hardening notes — addressing review of `022d18e` (`HANCORE-linux`)
+
+1. **RDP cert validation** — default strict (`cert_ignore=0`, no `/cert:ignore`; `bin/omarchy-remmina-launch:146,227-231`). Explicit narrow TOFU/pin per-host via `cert-allow`/`--allow-cert` (`bin/omarchy-remmina-servers:499-524`, `bin/omarchy-remmina-launch:80-84,139`) stored in `cert-exceptions.json` 0600 exact-host case-insensitive, max 500.
+2. **remmina.pref edit** — no auto on load (`Service.qml:60-62` only `refresh()`); explicit `Fix`/`Check` banner (`Panel.qml:359-376`, `Service.qml:658-669`), `bin/omarchy-remmina-tray-fix:7-153` does parent `0700` no-symlink/type/owner, size ≤1MiB, `mkstemp 0600`+`fsync`+atomic `mv`+dir `fsync`, timestamped `0600` backup, `--rollback`.
+3. **QML subprocesses** — every `Process` has `Timer` hard deadline (`Service.qml:108-115,238-245,278-285,324-331,372-379,414-421,462-469,513-520,601-608,650-657,720-727,752-759`), output limits `maxOutputBytes 256KiB` (`Service.qml:28,89,224,580,640`) + `path 1024`/`stdin 64KiB`, cleanup via `running=false` (process-group).
+4. **Import/state limits** — `bin/omarchy-remmina-import:22-26` file 2MiB/10k lines/1k records/256-char fields, `bin/omarchy-remmina-servers:26-28` 2k servers/500 groups, `Service.qml:27-28` 2k QML + field `1024` guards on `add/update/delete/launch/group/import`.
+5. **State writes** — `bin/omarchy-remmina-servers:39-67,93-158` verifies private `0700` parents, no-symlink/owner, `flock` `.lock`, `mkstemp` same-dir `0600`+`fsync`+atomic `replace`+dir `fsync` (also in `bin/omarchy-remmina-import:88-127` and `bin/omarchy-remmina-launch:346-378`).
+6. **Temp Remmina profiles** — `bin/omarchy-remmina-launch:22,143-210` private `$XDG_RUNTIME_DIR/omarchy-remmina` `0700` `0600` `mkstemp`, delayed `sleep 60; rm -f` (no immediate `atexit` race) + 1h stale purge.
+7. **Sensitive metadata docs** — `README.md:97-100` SSH `Host/HostName/User/Port` and Remmina `name/server/protocol/username/domain/group` collected only on explicit import buttons, stored local `0600`, never auto-imported.
 
 ## Acknowledgements
 
